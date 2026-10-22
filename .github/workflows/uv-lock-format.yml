@@ -13,7 +13,7 @@ jobs:
   lock-and-format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
       - name: Check uv.lock
         run: uv lock --check
