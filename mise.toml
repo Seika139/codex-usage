@@ -1,0 +1,40 @@
+[tools]
+dprint = "0.62.0"
+python = "3.12"
+shellcheck = "0.11.0"
+shfmt = "3.14.1"
+uv = "0.9.26"
+yamllint = "1.38.0"
+
+[tasks.permit]
+description = "mise タスクに権限を付与する"
+quiet = true
+run = [
+  "test -d mise/ && find mise/ -type f -name '*.sh' -exec chmod +x {} +",
+  "test -d mise/tasks/ && find mise/tasks/ -type f -name '*.sh' -exec chmod +x {} +",
+]
+
+[tasks.status]
+description = "Read current Codex rate limits as JSON"
+quiet = true
+run = "python -m codex_usage status"
+
+[tasks.collect]
+description = "Save current Codex rate limits and print the snapshot as JSON"
+quiet = true
+run = "python -m codex_usage collect"
+
+[tasks.schedule-install]
+description = "Install the 30-minute current-user collector schedule"
+quiet = true
+run = "python -m codex_usage schedule install"
+
+[tasks.schedule-status]
+description = "Show the current-user collector schedule status"
+quiet = true
+run = "python -m codex_usage schedule status"
+
+[tasks.schedule-uninstall]
+description = "Remove the current-user collector schedule"
+quiet = true
+run = "python -m codex_usage schedule uninstall"

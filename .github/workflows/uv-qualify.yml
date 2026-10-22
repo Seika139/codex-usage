@@ -1,0 +1,17 @@
+---
+name: Qualify Code (reusable)
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  call-common-uv-qualify:
+    # pyproject.toml requires Python 3.12.
+    uses: Seika139/.github/.github/workflows/uv-qualify.yml@main
+    with:
+      python-version: "3.12"
