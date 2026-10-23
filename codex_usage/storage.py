@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 DATABASE_FILENAME = "usage.sqlite3"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StorageError(RuntimeError):
@@ -76,22 +76,26 @@ def load_statuses_since(
                     f"Database schema version {version} is newer than supported "
                     f"version {SCHEMA_VERSION}."
                 )
+            if version not in (0, 1, SCHEMA_VERSION):
+                raise StorageError(
+                    f"Database schema version {version} is not supported."
+                )
             if version == 0:
                 _reject_unversioned_user_tables(connection)
                 return []
+            individual_limit_columns = (
+                ", individual_limit_present, individual_limit_limit, "
+                "individual_limit_used, individual_limit_remaining_percent, "
+                "individual_limit_resets_at"
+                if version == SCHEMA_VERSION
+                else ""
+            )
             rows = connection.execute(
-                """
-                SELECT collected_at,
-                       five_hour_present,
-                       five_hour_used_percent,
-                       five_hour_resets_at,
-                       weekly_present,
-                       weekly_used_percent,
-                       weekly_resets_at
-                FROM usage_snapshots
-                WHERE collected_at >= ?
-                ORDER BY collected_at ASC, id ASC
-                """,
+                "SELECT collected_at, five_hour_present, five_hour_used_percent, "
+                "five_hour_resets_at, weekly_present, weekly_used_percent, "
+                "weekly_resets_at" + individual_limit_columns + " "
+                "FROM usage_snapshots WHERE collected_at >= ? "
+                "ORDER BY collected_at ASC, id ASC",
                 (cutoff,),
             )
             return [_status_from_row(row) for row in rows]
@@ -117,28 +121,57 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             f"Database schema version {version} is newer than supported version "
             f"{SCHEMA_VERSION}; it was left unchanged."
         )
+    if version not in (0, 1, SCHEMA_VERSION):
+        raise StorageError(f"Database schema version {version} is not supported.")
     if version == SCHEMA_VERSION:
         return
     if version == 0:
         _reject_unversioned_user_tables(connection)
+        connection.execute(
+            """
+            CREATE TABLE usage_snapshots (
+                id INTEGER PRIMARY KEY,
+                collected_at TEXT NOT NULL,
+                five_hour_present INTEGER NOT NULL CHECK (five_hour_present IN (0, 1)),
+                five_hour_used_percent REAL,
+                five_hour_resets_at TEXT,
+                weekly_present INTEGER NOT NULL CHECK (weekly_present IN (0, 1)),
+                weekly_used_percent REAL,
+                weekly_resets_at TEXT,
+                individual_limit_present INTEGER NOT NULL
+                    CHECK (individual_limit_present IN (0, 1)),
+                individual_limit_limit TEXT,
+                individual_limit_used TEXT,
+                individual_limit_remaining_percent INTEGER,
+                individual_limit_resets_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX usage_snapshots_collected_at_id "
+            "ON usage_snapshots (collected_at, id)"
+        )
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        return
 
     connection.execute(
         """
-        CREATE TABLE usage_snapshots (
-            id INTEGER PRIMARY KEY,
-            collected_at TEXT NOT NULL,
-            five_hour_present INTEGER NOT NULL CHECK (five_hour_present IN (0, 1)),
-            five_hour_used_percent REAL,
-            five_hour_resets_at TEXT,
-            weekly_present INTEGER NOT NULL CHECK (weekly_present IN (0, 1)),
-            weekly_used_percent REAL,
-            weekly_resets_at TEXT
-        )
+        ALTER TABLE usage_snapshots ADD COLUMN individual_limit_present
+        INTEGER NOT NULL DEFAULT 0 CHECK (individual_limit_present IN (0, 1))
         """
     )
     connection.execute(
-        "CREATE INDEX usage_snapshots_collected_at_id "
-        "ON usage_snapshots (collected_at, id)"
+        "ALTER TABLE usage_snapshots ADD COLUMN individual_limit_limit TEXT"
+    )
+    connection.execute(
+        "ALTER TABLE usage_snapshots ADD COLUMN individual_limit_used TEXT"
+    )
+    connection.execute(
+        "ALTER TABLE usage_snapshots "
+        "ADD COLUMN individual_limit_remaining_percent INTEGER"
+    )
+    connection.execute(
+        "ALTER TABLE usage_snapshots ADD COLUMN individual_limit_resets_at TEXT"
     )
     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -146,6 +179,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> None:
     five_hour = status["fiveHour"]
     weekly = status["weekly"]
+    individual_limit = status.get("individualLimit")
     connection.execute(
         """
         INSERT INTO usage_snapshots (
@@ -155,8 +189,13 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
             five_hour_resets_at,
             weekly_present,
             weekly_used_percent,
-            weekly_resets_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            weekly_resets_at,
+            individual_limit_present,
+            individual_limit_limit,
+            individual_limit_used,
+            individual_limit_remaining_percent,
+            individual_limit_resets_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             status["collectedAt"],
@@ -166,6 +205,11 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
             int(weekly is not None),
             None if weekly is None else weekly["usedPercent"],
             None if weekly is None else weekly["resetsAt"],
+            int(individual_limit is not None),
+            None if individual_limit is None else individual_limit["limit"],
+            None if individual_limit is None else individual_limit["used"],
+            None if individual_limit is None else individual_limit["remainingPercent"],
+            None if individual_limit is None else individual_limit["resetsAt"],
         ),
     )
 
@@ -178,6 +222,28 @@ def _status_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
         "collectedAt": collected_at,
         "fiveHour": _window_from_row(row[1], row[2], row[3]),
         "weekly": _window_from_row(row[4], row[5], row[6]),
+        "individualLimit": (
+            None
+            if len(row) == 7
+            else _individual_limit_from_row(row[7], row[8], row[9], row[10], row[11])
+        ),
+    }
+
+
+def _individual_limit_from_row(
+    present: int,
+    limit: str | None,
+    used: str | None,
+    remaining_percent: int | None,
+    resets_at: str | None,
+) -> dict[str, Any] | None:
+    if not present:
+        return None
+    return {
+        "limit": limit,
+        "used": used,
+        "remainingPercent": remaining_percent,
+        "resetsAt": resets_at,
     }
 
 

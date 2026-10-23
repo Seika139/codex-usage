@@ -1,6 +1,6 @@
 # codex-usage
 
-Codex App Serverから現在の5時間枠と週間枠を取得し、安定したJSON形式で出力するクロスプラットフォームCLIです。
+Codex App Serverから現在の5時間枠、週間枠、設定されている場合は月間の個別枠を取得し、安定したJSON形式で出力するクロスプラットフォームCLIです。
 
 ## 必要なもの
 
@@ -45,7 +45,7 @@ mise run history --hours 168 --db ./codex-usage.sqlite3
 
 SQLiteの保存先は`--db PATH`、または`CODEX_USAGE_DB`で指定できます。既定ではWindowsは`%LOCALAPPDATA%/codex-usage/usage.sqlite3`、macOSは`~/Library/Application Support/codex-usage/usage.sqlite3`、Linuxは`$XDG_DATA_HOME/codex-usage/usage.sqlite3`（未設定なら`~/.local/share/codex-usage/usage.sqlite3`）です。履歴の読み込みでは、DBファイルや親ディレクトリが未作成なら何も作らず、空の`samples`を返します。
 
-保存するのはstatusの枠有無、使用率、リセット時刻、取得時刻だけです。App Serverの生レスポンス、プロンプト、ファイルパス、コードは保存しません。定期収集は`mise run schedule-install`でOSのユーザースケジューラーに登録できます。
+保存するのはstatusの枠有無、使用率、個別枠の上限・使用量・残量率、リセット時刻、取得時刻だけです。個別枠の上限と使用量は文字列のまま保存し、精度を維持します。App Serverの生レスポンス、プロンプト、ファイルパス、コードは保存しません。定期収集は`mise run schedule-install`でOSのユーザースケジューラーに登録できます。
 
 ## 出力形式
 
@@ -63,11 +63,19 @@ SQLiteの保存先は`--db PATH`、または`CODEX_USAGE_DB`で指定できま�
     "usedPercent": 60.0,
     "remainingPercent": 40.0,
     "resetsAt": "2026-10-26T00:00:00Z"
+  },
+  "individualLimit": {
+    "limit": "30000",
+    "used": "8617.864060759544",
+    "remainingPercent": 71,
+    "resetsAt": "2026-11-01T00:00:00Z"
   }
 }
 ```
 
-Codexが該当枠を返さない場合、その枠は`null`です。枠は`primary`や`secondary`という名前ではなく、期間（300分または10080分）で判別します。`rateLimitsByLimitId`が存在する場合は、その`codex`項目だけを使います。旧形式の`rateLimits`はマップがないか`null`で、かつ別の`limitId`を明示していない場合に限り使います。
+Codexが該当枠を返さない場合、その枠は`null`です。5時間枠と週間枠は`primary`や`secondary`という名前ではなく、期間（300分または10080分）で判別します。月間の個別枠はApp Serverの`individualLimit`から取得し、`limit`と`used`は受信した文字列を保持します。`rateLimitsByLimitId`が存在する場合は、その`codex`項目だけを使います。旧形式の`rateLimits`はマップがないか`null`で、かつ別の`limitId`を明示していない場合に限り使います。
+
+`status`と`history`の各スナップショットでは`individualLimit.limit`に上限値を表示し、上限が変わった場合も取得時点ごとの値を記録します。
 
 ## 対応範囲
 

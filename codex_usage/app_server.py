@@ -553,6 +553,59 @@ def _normalize_limit_bucket(bucket: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_individual_limit(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AppServerError("App Server returned a malformed individualLimit value.")
+
+    normalized: dict[str, Any] = {}
+    for field in ("limit", "used"):
+        amount = value.get(field)
+        if amount is not None and not isinstance(amount, str):
+            raise AppServerError(
+                f"App Server returned a non-string individualLimit {field} value."
+            )
+        normalized[field] = amount
+
+    remaining_value = value.get("remainingPercent")
+    if remaining_value is None:
+        remaining_percent = None
+    elif isinstance(remaining_value, bool) or not isinstance(remaining_value, int):
+        raise AppServerError(
+            "App Server returned a non-integer individualLimit remainingPercent value."
+        )
+    else:
+        remaining_percent = remaining_value
+        if not 0 <= remaining_percent <= 100:
+            raise AppServerError(
+                "App Server returned individualLimit remainingPercent outside the "
+                "range 0 through 100."
+            )
+
+    resets_value = value.get("resetsAt")
+    if resets_value is None:
+        resets_at = None
+    elif isinstance(resets_value, bool) or not isinstance(resets_value, (int, float)):
+        raise AppServerError(
+            "App Server returned a non-numeric individualLimit resetsAt value."
+        )
+    else:
+        try:
+            reset_timestamp = float(resets_value)
+        except (OverflowError, ValueError) as exc:
+            raise AppServerError(
+                "App Server returned an invalid reset timestamp."
+            ) from exc
+        if not math.isfinite(reset_timestamp):
+            raise AppServerError("App Server returned an invalid reset timestamp.")
+        resets_at = _utc_iso(reset_timestamp)
+
+    normalized["remainingPercent"] = remaining_percent
+    normalized["resetsAt"] = resets_at
+    return normalized
+
+
 def _select_rate_limits(result: dict[str, Any]) -> dict[str, Any] | None:
     by_limit_id = result.get("rateLimitsByLimitId")
     if by_limit_id is not None:
@@ -587,7 +640,9 @@ def _status_from_result(result: Any) -> dict[str, Any]:
 
     limits = _select_rate_limits(result)
     grouped: dict[str, dict[str, Any]] = {}
+    individual_limit = None
     if limits is not None:
+        individual_limit = _normalize_individual_limit(limits.get("individualLimit"))
         for bucket in limits.values():
             if not isinstance(bucket, dict):
                 continue
@@ -614,6 +669,7 @@ def _status_from_result(result: Any) -> dict[str, Any]:
         .replace("+00:00", "Z"),
         "fiveHour": grouped.get("fiveHour"),
         "weekly": grouped.get("weekly"),
+        "individualLimit": individual_limit,
     }
 
 
