@@ -23,7 +23,7 @@ run = "python -m codex_usage status"
 [tasks.collect]
 description = "Save current Codex rate limits and print the snapshot as JSON"
 quiet = true
-run = "python -m codex_usage collect"
+run = "uv run --locked python -m codex_usage collect"
 
 [tasks.history]
 description = "Show recent usage history"

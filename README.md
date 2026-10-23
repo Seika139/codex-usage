@@ -4,17 +4,17 @@ Codex App Serverから現在の5時間枠、週間枠、設定されている場
 
 ## 必要なもの
 
-- miseと、プロジェクト設定で管理するPython 3.12。
+- miseと、プロジェクト設定で管理するPython 3.12およびuv。
 - インストール済みで、アカウント認証を済ませたCodex CLI。
 
-CLIは`codex app-server --stdio`を起動してJSON-RPCの初期化を行います。`status`は利用枠だけを読みます。`collect`は全種別のスレッド一覧をページングし、指定された更新期間内のスレッドに限ってモデル別利用量を問い合わせます。Python標準ライブラリのみを使い、Windows、macOS、Linuxで動作します。
+CLIは`codex app-server --stdio`を起動してJSON-RPCの初期化を行います。`status`は利用枠だけを読みます。`collect`は全種別のスレッド一覧をページングし、指定された更新期間内のスレッドに限ってモデル別利用量を問い合わせます。Discord通知には[discord-notify](https://github.com/Seika139/discord-notify)を使います。このライブラリはPython標準ライブラリのみで動作し、codex-usageはWindows、macOS、Linuxで動作します。
 
 ## 実行方法
 
 リポジトリのディレクトリから実行します。
 
 ```sh
-mise exec -- python -m codex_usage status
+mise exec -- uv run --locked python -m codex_usage status
 ```
 
 miseタスクも使えます。
@@ -31,9 +31,15 @@ mise run status
 
 ```sh
 mise run collect
-mise exec -- python -m codex_usage collect --db ./codex-usage.sqlite3
-mise exec -- python -m codex_usage collect --active-within-hours 72
+mise exec -- uv run --locked python -m codex_usage collect --db ./codex-usage.sqlite3
+mise exec -- uv run --locked python -m codex_usage collect --active-within-hours 72
 ```
+
+`collect`は保存前に直前のスナップショットと5時間枠・週間枠の残量を比較します。残量が50%、20%、5%を下回ったとき、または0%以下になったときに通知します。1回の計測で複数の段階を越えた場合は該当する段階を1つのDiscordメッセージにまとめます。初回の計測は比較対象がないため通知しません。リセット日時が前回から変わっていれば新しい枠として残量100%から比較します。
+
+通知先は`CODEX_USAGE_DISCORD_WEBHOOK_URL`環境変数、またはユーザーデータディレクトリに置く`discord-webhook-url`ファイルで指定します。環境変数が設定されている場合はそちらを優先します。環境変数は手動実行に使えますが、定期実行のスケジューラーへは渡さないため、定期通知にはsecret fileを使ってください。たとえば既定のLinux DBを使う場合は`~/.local/share/codex-usage/discord-webhook-url`です。`CODEX_USAGE_DB`でDBを指定した場合は、そのDBのディレクトリをsecret fileの場所として使います。`--db`はsecret fileの場所に影響しません。ファイルにはWebhook URLだけを保存し、Linux/macOSではアクセス権を`600`にしてください。
+
+Webhookが未設定の場合は通知を送らず、スナップショットを保存します。通知の送信に失敗した場合は`collect`も失敗し、スナップショットを保存しません。次の収集で同じ閾値超過を再評価できます。Discordが受信した後に応答だけが失われた場合、送信成功後のDB保存に失敗した場合、または複数の`collect`が同時に実行された場合は重複通知が発生する可能性があります。
 
 `history`は現在UTCから指定時間以内のスナップショットを古い順に返します。`--hours`には有限の正数を指定してください。
 

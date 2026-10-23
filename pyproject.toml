@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "A cross-platform CLI for reading Codex usage and rate limits."
 readme = "README.md"
 requires-python = ">=3.12,<3.16"
-dependencies = []
+dependencies = [
+    "discord-notify @ git+https://github.com/Seika139/discord-notify@3d50c1188cd9a85a9da4fdb5d4415e276f07f213",
+]
 
 [dependency-groups]
 dev = ["ruff>=0.16.2"]

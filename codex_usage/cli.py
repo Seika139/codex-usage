@@ -8,6 +8,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .app_server import AppServerError, get_live_status
+from .notifications import (
+    NotificationError,
+    find_rate_limit_alerts,
+    send_rate_limit_alerts,
+)
 from .scheduler import (
     DEFAULT_INTERVAL_MINUTES,
     MAX_INTERVAL_MINUTES,
@@ -15,7 +20,13 @@ from .scheduler import (
     SchedulerError,
     schedule,
 )
-from .storage import StorageError, get_database_stats, load_statuses_since, save_status
+from .storage import (
+    StorageError,
+    get_database_stats,
+    load_latest_rate_limit_snapshot,
+    load_statuses_since,
+    save_status,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -232,10 +243,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "status":
             _print_json(get_live_status())
         elif args.command == "collect":
+            previous = load_latest_rate_limit_snapshot(args.db)
             status = get_live_status(
                 include_model_usage=True,
                 active_within_hours=args.active_within_hours,
             )
+            alerts = find_rate_limit_alerts(previous, status)
+            send_rate_limit_alerts(alerts)
             save_status(status, args.db)
             _print_json(status)
         elif args.command == "history":
@@ -274,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
                     interval_minutes=getattr(args, "interval_minutes", None),
                 )
             )
-    except (AppServerError, SchedulerError, StorageError) as exc:
+    except (AppServerError, NotificationError, SchedulerError, StorageError) as exc:
         print(f"codex-usage: {exc}", file=sys.stderr)
         return 1
     return 0

@@ -6,6 +6,9 @@ requires-python = ">=3.12, <3.16"
 name = "codex-usage"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "discord-notify" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -13,9 +16,15 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "discord-notify", git = "https://github.com/Seika139/discord-notify?rev=3d50c1188cd9a85a9da4fdb5d4415e276f07f213" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.16.2" }]
+
+[[package]]
+name = "discord-notify"
+version = "0.3.0"
+source = { git = "https://github.com/Seika139/discord-notify?rev=3d50c1188cd9a85a9da4fdb5d4415e276f07f213#3d50c1188cd9a85a9da4fdb5d4415e276f07f213" }
 
 [[package]]
 name = "ruff"
