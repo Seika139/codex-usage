@@ -12,16 +12,60 @@ cd "$ROOT_DIR" || exit 1
 # shellcheck disable=SC1091
 source "${ROOT_DIR}/mise/common.sh"
 
+find_ruff() {
+  local windows_ruff="$ROOT_DIR/.venv/Scripts/ruff.exe"
+  local posix_ruff="$ROOT_DIR/.venv/bin/ruff"
+  if [ -f "$windows_ruff" ]; then
+    printf '%s\n' "$windows_ruff"
+  elif [ -x "$posix_ruff" ]; then
+    printf '%s\n' "$posix_ruff"
+  else
+    return 1
+  fi
+}
+
 print_blue "formatting Markdown, TOML, JSON with dprint"$'\n'
 dprint fmt
 
 python_path="$(mise which python)"
+ruff_ready=true
+if ! uv lock --check --python "$python_path"; then
+  print_red "uv.lock check failed; skipping Ruff formatting."$'\n'
+  ruff_ready=false
+fi
+if [ "$ruff_ready" = true ]; then
+  locked_ruff_version="$("$python_path" -c 'import tomllib; from pathlib import Path; print(next(package["version"] for package in tomllib.loads(Path("uv.lock").read_text())["package"] if package["name"] == "ruff"))')"
+  ruff_path="$(find_ruff || true)"
+  installed_ruff_version=""
+  if [ -n "$ruff_path" ]; then
+    installed_ruff_version="$("$ruff_path" --version 2>/dev/null || true)"
+  fi
+  if [ "$installed_ruff_version" != "ruff $locked_ruff_version" ]; then
+    # Sync only when Ruff is missing or stale; the LSP may be using this environment.
+    if ! uv run --locked --python "$python_path" ruff --version >/dev/null; then
+      print_red "Could not prepare locked Ruff; skipping Ruff formatting."$'\n'
+      ruff_ready=false
+    else
+      ruff_path="$(find_ruff || true)"
+      installed_ruff_version=""
+      if [ -n "$ruff_path" ]; then
+        installed_ruff_version="$("$ruff_path" --version 2>/dev/null || true)"
+      fi
+      if [ "$installed_ruff_version" != "ruff $locked_ruff_version" ]; then
+        print_red "Could not prepare locked Ruff; skipping Ruff formatting."$'\n'
+        ruff_ready=false
+      fi
+    fi
+  fi
+fi
 
-print_blue "Applying Ruff lint fixes"$'\n'
-uv run --locked --python "$python_path" ruff check --fix codex_usage
+if [ "$ruff_ready" = true ]; then
+  print_blue "Applying Ruff lint fixes"$'\n'
+  "$ruff_path" check --fix codex_usage
 
-print_blue "Formatting Python code"$'\n'
-uv run --locked --python "$python_path" ruff format codex_usage
+  print_blue "Formatting Python code"$'\n'
+  "$ruff_path" format codex_usage
+fi
 
 print_blue "formatting shell scripts with shfmt"$'\n'
 shell_files=()
@@ -55,3 +99,9 @@ yamllint -f parsable . | while IFS= read -r finding; do
     fi
   fi
 done
+format_status=$?
+
+if [ "$ruff_ready" = false ]; then
+  exit 1
+fi
+exit "$format_status"
