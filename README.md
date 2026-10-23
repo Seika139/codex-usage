@@ -37,9 +37,11 @@ mise exec -- python -m codex_usage collect --db ./codex-usage.sqlite3
 `history`は現在UTCから指定時間以内のスナップショットを古い順に返します。`--hours`には有限の正数を指定してください。
 
 ```sh
-mise exec -- python -m codex_usage history --hours 24
-mise exec -- python -m codex_usage history --hours 168 --db ./codex-usage.sqlite3
+mise run history --hours 24
+mise run history --hours 168 --db ./codex-usage.sqlite3
 ```
+
+`--hours`は必須で、`--db PATH`は省略できます。どちらの引数もCLIへそのまま渡されます。
 
 SQLiteの保存先は`--db PATH`、または`CODEX_USAGE_DB`で指定できます。既定ではWindowsは`%LOCALAPPDATA%/codex-usage/usage.sqlite3`、macOSは`~/Library/Application Support/codex-usage/usage.sqlite3`、Linuxは`$XDG_DATA_HOME/codex-usage/usage.sqlite3`（未設定なら`~/.local/share/codex-usage/usage.sqlite3`）です。履歴の読み込みでは、DBファイルや親ディレクトリが未作成なら何も作らず、空の`samples`を返します。
 

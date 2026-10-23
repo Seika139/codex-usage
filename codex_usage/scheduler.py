@@ -309,7 +309,7 @@ def _serialize_mac(spec: JobSpec) -> bytes:
 def _parse_mac(content: bytes, spec: JobSpec) -> bool:
     try:
         parsed = plistlib.loads(content)
-    except (plistlib.InvalidFileException, ValueError, TypeError):
+    except plistlib.InvalidFileException, ValueError, TypeError:
         return False
     return parsed == _mac_plist(spec)
 
@@ -1030,7 +1030,7 @@ def schedule(action: str) -> dict[str, Any]:
     current = _current_spec()
     try:
         _apply_registration(current, replace_existing=previous is not None)
-    except (OSError, SchedulerError):
+    except OSError, SchedulerError:
         _rollback_registration(previous, current)
         raise
     try:

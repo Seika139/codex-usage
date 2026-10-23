@@ -104,7 +104,7 @@ def _drain_stderr(stream: TextIO, tail: _StderrTail) -> None:
             if not chunk:
                 return
             tail.append(chunk)
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         return
 
 
@@ -267,7 +267,7 @@ class _WindowsJob:
                 kernel32.CloseHandle(handle)
                 return None
             return cls(kernel32, handle)
-        except (AttributeError, OSError, TypeError, ValueError):
+        except AttributeError, OSError, TypeError, ValueError:
             return None
 
     def assign(self, process_id: int) -> bool:

@@ -1,6 +1,7 @@
 [tools]
 dprint = "0.64.1"
-python = "3.15.0"
+fzf = "0.74.5"
+python = "3.15.1"
 shellcheck = "0.11.0"
 shfmt = "3.14.1"
 uv = "0.13.1"
@@ -24,17 +25,8 @@ description = "Save current Codex rate limits and print the snapshot as JSON"
 quiet = true
 run = "python -m codex_usage collect"
 
-[tasks.schedule-install]
-description = "Install the 30-minute current-user collector schedule"
+[tasks.history]
+description = "Show recent usage history"
 quiet = true
-run = "python -m codex_usage schedule install"
-
-[tasks.schedule-status]
-description = "Show the current-user collector schedule status"
-quiet = true
-run = "python -m codex_usage schedule status"
-
-[tasks.schedule-uninstall]
-description = "Remove the current-user collector schedule"
-quiet = true
-run = "python -m codex_usage schedule uninstall"
+raw_args = true
+run = "python -m codex_usage history"
