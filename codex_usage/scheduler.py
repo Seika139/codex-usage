@@ -12,15 +12,19 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .storage import resolve_db_path
 
-MANIFEST_SCHEMA = 1
-SCHEDULE_SECONDS = 1800
+MANIFEST_SCHEMA = 2
+LEGACY_MANIFEST_SCHEMA = 1
+DEFAULT_INTERVAL_MINUTES = 30
+MIN_INTERVAL_MINUTES = 1
+MAX_INTERVAL_MINUTES = 44640
+SCHEDULE_SECONDS = DEFAULT_INTERVAL_MINUTES * 60
 MAC_LABEL = "com.openai.codex-usage.collect"
 SYSTEMD_NAME = "codex-usage-collect"
 WINDOWS_TASK_NAME_PREFIX = "Codex Usage Collector"
@@ -44,17 +48,45 @@ class JobSpec:
     owner_id: str
     powershell: str = ""
     start_boundary: str = ""
+    interval_minutes: int = DEFAULT_INTERVAL_MINUTES
+    manifest_schema: int = MANIFEST_SCHEMA
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> JobSpec:
-        expected = {field for field in cls.__dataclass_fields__}
-        if set(value) != expected or any(
-            not isinstance(item, str) for item in value.values()
+    def from_dict(cls, value: Mapping[str, Any], schema_version: int) -> JobSpec:
+        if type(schema_version) is not int:
+            raise SchedulerError("The schedule manifest has an unsupported schema.")
+        string_fields = {
+            "system",
+            "root",
+            "mise",
+            "db_path",
+            "environment_path",
+            "log_path",
+            "owner_id",
+            "powershell",
+            "start_boundary",
+        }
+        expected = string_fields
+        interval_minutes = DEFAULT_INTERVAL_MINUTES
+        if schema_version == MANIFEST_SCHEMA:
+            expected = expected | {"intervalMinutes"}
+            interval_minutes = value.get("intervalMinutes")
+        elif schema_version != LEGACY_MANIFEST_SCHEMA:
+            raise SchedulerError("The schedule manifest has an unsupported schema.")
+        if (
+            set(value) != expected
+            or any(type(value[name]) is not str for name in string_fields)
+            or type(interval_minutes) is not int
         ):
             raise SchedulerError(
                 "The schedule manifest has an invalid job specification."
             )
-        spec = cls(**value)
+        fields = {name: value[name] for name in string_fields}
+        spec = cls(
+            **fields,
+            interval_minutes=interval_minutes,
+            manifest_schema=schema_version,
+        )
         _validate_spec(spec)
         return spec
 
@@ -112,8 +144,32 @@ def _validate_value(name: str, value: str) -> None:
 
 
 def _validate_spec(spec: JobSpec) -> None:
-    for name, value in asdict(spec).items():
-        _validate_value(name, value)
+    for name in (
+        "system",
+        "root",
+        "mise",
+        "db_path",
+        "environment_path",
+        "log_path",
+        "owner_id",
+        "powershell",
+        "start_boundary",
+    ):
+        _validate_value(name, getattr(spec, name))
+    if type(spec.manifest_schema) is not int or spec.manifest_schema not in {
+        LEGACY_MANIFEST_SCHEMA,
+        MANIFEST_SCHEMA,
+    }:
+        raise SchedulerError("The schedule manifest has an unsupported schema.")
+    if (
+        type(spec.interval_minutes) is not int
+        or not MIN_INTERVAL_MINUTES <= spec.interval_minutes <= MAX_INTERVAL_MINUTES
+        or (
+            spec.manifest_schema == LEGACY_MANIFEST_SCHEMA
+            and spec.interval_minutes != DEFAULT_INTERVAL_MINUTES
+        )
+    ):
+        raise SchedulerError("The schedule interval is invalid.")
     if spec.system not in {"Darwin", "Linux", "Windows"}:
         raise SchedulerError(f"Unsupported operating system: {spec.system}")
     for name in ("root", "mise", "db_path"):
@@ -139,7 +195,7 @@ def _validate_spec(spec: JobSpec) -> None:
         raise SchedulerError("The Windows schedule manifest is incomplete.")
 
 
-def _current_spec() -> JobSpec:
+def _current_spec(interval_minutes: int = DEFAULT_INTERVAL_MINUTES) -> JobSpec:
     system = platform.system()
     if system not in {"Darwin", "Linux", "Windows"}:
         raise SchedulerError(f"Unsupported operating system: {system}")
@@ -179,6 +235,8 @@ def _current_spec() -> JobSpec:
         owner_id=owner_id,
         powershell=powershell,
         start_boundary=start_boundary,
+        interval_minutes=interval_minutes,
+        manifest_schema=MANIFEST_SCHEMA,
     )
     _validate_spec(spec)
     return spec
@@ -191,7 +249,23 @@ def _canonical_json(value: Any) -> bytes:
 
 
 def _manifest_payload(spec: JobSpec) -> dict[str, Any]:
-    return {"schemaVersion": MANIFEST_SCHEMA, "job": asdict(spec)}
+    job = {
+        name: getattr(spec, name)
+        for name in (
+            "system",
+            "root",
+            "mise",
+            "db_path",
+            "environment_path",
+            "log_path",
+            "owner_id",
+            "powershell",
+            "start_boundary",
+        )
+    }
+    if spec.manifest_schema == MANIFEST_SCHEMA:
+        job["intervalMinutes"] = spec.interval_minutes
+    return {"schemaVersion": spec.manifest_schema, "job": job}
 
 
 def _digest(payload: Mapping[str, Any]) -> str:
@@ -221,14 +295,15 @@ def _load_manifest(path: Path) -> tuple[JobSpec | None, str | None]:
     if (
         not isinstance(payload, dict)
         or set(payload) != {"schemaVersion", "job"}
-        or payload["schemaVersion"] != MANIFEST_SCHEMA
+        or type(payload["schemaVersion"]) is not int
+        or payload["schemaVersion"] not in {LEGACY_MANIFEST_SCHEMA, MANIFEST_SCHEMA}
         or not isinstance(document["sha256"], str)
         or document["sha256"] != _digest(payload)
     ):
         raise SchedulerError("The schedule manifest is modified or unsupported.")
     if not isinstance(payload["job"], dict):
         raise SchedulerError("The schedule manifest has an invalid job specification.")
-    spec = JobSpec.from_dict(payload["job"])
+    spec = JobSpec.from_dict(payload["job"], payload["schemaVersion"])
     if spec.system != platform.system():
         raise SchedulerError(
             "The schedule manifest belongs to a different operating system."
@@ -292,7 +367,7 @@ def _mac_plist(spec: JobSpec) -> dict[str, Any]:
         "Label": MAC_LABEL,
         "ProgramArguments": [spec.mise, "run", "collect"],
         "WorkingDirectory": spec.root,
-        "StartInterval": SCHEDULE_SECONDS,
+        "StartInterval": spec.interval_minutes * 60,
         "EnvironmentVariables": {
             "PATH": spec.environment_path,
             "CODEX_USAGE_DB": spec.db_path,
@@ -397,16 +472,31 @@ def _systemd_service(spec: JobSpec) -> bytes:
     return "\n".join(lines).encode("utf-8")
 
 
-def _systemd_timer() -> bytes:
+def _systemd_timer(spec: JobSpec) -> bytes:
+    if spec.manifest_schema == LEGACY_MANIFEST_SCHEMA:
+        return (
+            "[Unit]\n"
+            "Description=Run Codex usage collector every 30 minutes\n"
+            "\n"
+            "[Timer]\n"
+            "OnCalendar=*:0/30\n"
+            "Persistent=true\n"
+            f"Unit={SYSTEMD_NAME}.service\n"
+            "AccuracySec=1min\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=timers.target\n"
+        ).encode()
+    interval = f"{spec.interval_minutes}min"
     return (
         "[Unit]\n"
-        "Description=Run Codex usage collector every 30 minutes\n"
+        f"Description=Run Codex usage collector every {spec.interval_minutes} minutes\n"
         "\n"
         "[Timer]\n"
-        "OnCalendar=*:0/30\n"
-        "Persistent=true\n"
+        f"OnActiveSec={interval}\n"
+        f"OnUnitActiveSec={interval}\n"
         f"Unit={SYSTEMD_NAME}.service\n"
-        "AccuracySec=1min\n"
+        "AccuracySec=1s\n"
         "\n"
         "[Install]\n"
         "WantedBy=timers.target\n"
@@ -486,22 +576,24 @@ def _linux_registration_matches(spec: JobSpec) -> bool:
     ):
         return False
     try:
-        return (
-            service_path.read_bytes() == _systemd_service(spec)
-            and timer_path.read_bytes() == _systemd_timer()
-        )
+        return service_path.read_bytes() == _systemd_service(
+            spec
+        ) and timer_path.read_bytes() == _systemd_timer(spec)
     except OSError:
         return False
 
 
-def _linux_apply(spec: JobSpec) -> None:
+def _linux_apply(spec: JobSpec, *, replace_existing: bool = False) -> None:
     _require_systemd_user_manager()
     service_path, timer_path = _systemd_paths()
     service_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     _atomic_write(service_path, _systemd_service(spec))
-    _atomic_write(timer_path, _systemd_timer())
+    _atomic_write(timer_path, _systemd_timer(spec))
     _systemctl(["daemon-reload"])
-    _systemctl(["enable", "--now", f"{SYSTEMD_NAME}.timer"])
+    timer_name = f"{SYSTEMD_NAME}.timer"
+    _systemctl(["enable", "--now", timer_name])
+    if replace_existing:
+        _systemctl(["restart", timer_name])
 
 
 def _linux_file_matches(path: Path, expected: bytes) -> bool:
@@ -518,7 +610,7 @@ def _linux_rollback_install(spec: JobSpec) -> None:
     service_path, timer_path = _systemd_paths()
     expected_files = {
         service_path: _systemd_service(spec),
-        timer_path: _systemd_timer(),
+        timer_path: _systemd_timer(spec),
     }
     matching_paths = {
         path
@@ -688,16 +780,24 @@ def _windows_task_xml(spec: JobSpec) -> bytes:
     ET.SubElement(registration, tag("URI")).text = f"\\{_windows_task_name(spec)}"
     ET.SubElement(registration, tag("Description")).text = marker
     triggers = ET.SubElement(root, tag("Triggers"))
-    daily = ET.SubElement(triggers, tag("CalendarTrigger"))
-    ET.SubElement(daily, tag("Enabled")).text = "true"
-    ET.SubElement(daily, tag("StartBoundary")).text = spec.start_boundary
-    repetition = ET.SubElement(daily, tag("Repetition"))
-    ET.SubElement(repetition, tag("Interval")).text = "PT30M"
-    ET.SubElement(repetition, tag("Duration")).text = "P1D"
-    ET.SubElement(repetition, tag("StopAtDurationEnd")).text = "false"
-    ET.SubElement(
-        ET.SubElement(daily, tag("ScheduleByDay")), tag("DaysInterval")
-    ).text = "1"
+    if spec.manifest_schema == LEGACY_MANIFEST_SCHEMA:
+        daily = ET.SubElement(triggers, tag("CalendarTrigger"))
+        ET.SubElement(daily, tag("Enabled")).text = "true"
+        ET.SubElement(daily, tag("StartBoundary")).text = spec.start_boundary
+        repetition = ET.SubElement(daily, tag("Repetition"))
+        ET.SubElement(repetition, tag("Interval")).text = "PT30M"
+        ET.SubElement(repetition, tag("Duration")).text = "P1D"
+        ET.SubElement(repetition, tag("StopAtDurationEnd")).text = "false"
+        ET.SubElement(
+            ET.SubElement(daily, tag("ScheduleByDay")), tag("DaysInterval")
+        ).text = "1"
+    else:
+        time_trigger = ET.SubElement(triggers, tag("TimeTrigger"))
+        ET.SubElement(time_trigger, tag("Enabled")).text = "true"
+        ET.SubElement(time_trigger, tag("StartBoundary")).text = spec.start_boundary
+        repetition = ET.SubElement(time_trigger, tag("Repetition"))
+        ET.SubElement(repetition, tag("Interval")).text = f"PT{spec.interval_minutes}M"
+        # Omitting Duration makes Task Scheduler repeat indefinitely.
     principals = ET.SubElement(root, tag("Principals"))
     principal = ET.SubElement(principals, tag("Principal"), {"id": "Author"})
     ET.SubElement(principal, tag("UserId")).text = spec.owner_id
@@ -765,36 +865,71 @@ def _parse_windows_registration(content: str, spec: JobSpec) -> bool:
     ):
         return False
     triggers = root.find(tag("Triggers"))
-    daily = None if triggers is None else triggers.find(tag("CalendarTrigger"))
+    trigger_name = (
+        "CalendarTrigger"
+        if spec.manifest_schema == LEGACY_MANIFEST_SCHEMA
+        else "TimeTrigger"
+    )
+    trigger = None if triggers is None else triggers.find(tag(trigger_name))
     if (
         triggers is None
         or not has_no_attributes(triggers)
-        or not has_children(triggers, ("CalendarTrigger",))
-        or daily is None
-        or not has_no_attributes(daily)
+        or not has_children(triggers, (trigger_name,))
+        or trigger is None
+        or not has_no_attributes(trigger)
     ):
         return False
-    daily_names = [child.tag for child in daily]
-    if daily_names != [
-        tag("StartBoundary"),
-        tag("Repetition"),
-        tag("ScheduleByDay"),
-    ] or not leaf_matches(daily, "StartBoundary", spec.start_boundary):
-        return False
-    repetition = daily.find(tag("Repetition"))
-    schedule_by_day = daily.find(tag("ScheduleByDay"))
-    if (
-        repetition is None
-        or not has_no_attributes(repetition)
-        or not has_children(repetition, ("Interval", "Duration"))
-        or not leaf_matches(repetition, "Interval", "PT30M")
-        or not leaf_matches(repetition, "Duration", "P1D")
-        or schedule_by_day is None
-        or not has_no_attributes(schedule_by_day)
-        or not has_children(schedule_by_day, ("DaysInterval",))
-        or not leaf_matches(schedule_by_day, "DaysInterval", "1")
-    ):
-        return False
+    repetition = trigger.find(tag("Repetition"))
+    if spec.manifest_schema == LEGACY_MANIFEST_SCHEMA:
+        if (
+            [child.tag for child in trigger]
+            != [tag("StartBoundary"), tag("Repetition"), tag("ScheduleByDay")]
+            or not leaf_matches(trigger, "StartBoundary", spec.start_boundary)
+            or repetition is None
+            or not has_no_attributes(repetition)
+            or not has_children(repetition, ("Interval", "Duration"))
+            or not leaf_matches(repetition, "Interval", "PT30M")
+            or not leaf_matches(repetition, "Duration", "P1D")
+        ):
+            return False
+        schedule_by_day = trigger.find(tag("ScheduleByDay"))
+        if (
+            schedule_by_day is None
+            or not has_no_attributes(schedule_by_day)
+            or not has_children(schedule_by_day, ("DaysInterval",))
+            or not leaf_matches(schedule_by_day, "DaysInterval", "1")
+        ):
+            return False
+    else:
+        trigger_names = [
+            child.tag.removeprefix(f"{{{TASK_XML_NAMESPACE}}}") for child in trigger
+        ]
+        if (
+            set(trigger_names) - {"StartBoundary", "Repetition", "Enabled"}
+            or trigger_names.count("StartBoundary") != 1
+            or trigger_names.count("Repetition") != 1
+            or trigger_names.count("Enabled") > 1
+            or not leaf_matches(trigger, "StartBoundary", spec.start_boundary)
+            or (
+                "Enabled" in trigger_names
+                and not leaf_matches(trigger, "Enabled", "true")
+            )
+            or repetition is None
+            or not has_no_attributes(repetition)
+        ):
+            return False
+        repetition_names = [
+            child.tag.removeprefix(f"{{{TASK_XML_NAMESPACE}}}") for child in repetition
+        ]
+        if (
+            repetition_names not in (["Interval"], ["Interval", "StopAtDurationEnd"])
+            or not leaf_matches(repetition, "Interval", f"PT{spec.interval_minutes}M")
+            or (
+                "StopAtDurationEnd" in repetition_names
+                and not leaf_matches(repetition, "StopAtDurationEnd", "false")
+            )
+        ):
+            return False
     principals = root.find(tag("Principals"))
     principal = None if principals is None else principals.find(tag("Principal"))
     if (
@@ -941,7 +1076,7 @@ def _apply_registration(spec: JobSpec, *, replace_existing: bool = False) -> Non
     if spec.system == "Darwin":
         _mac_apply(spec)
     elif spec.system == "Linux":
-        _linux_apply(spec)
+        _linux_apply(spec, replace_existing=replace_existing)
     else:
         _windows_apply(spec, replace_existing=replace_existing)
 
@@ -1006,10 +1141,31 @@ def _rollback_registration(previous: JobSpec | None, current: JobSpec) -> None:
         ) from exc
 
 
-def schedule(action: str) -> dict[str, Any]:
+def _validate_interval_minutes(value: Any) -> int:
+    if (
+        type(value) is not int
+        or not MIN_INTERVAL_MINUTES <= value <= MAX_INTERVAL_MINUTES
+    ):
+        raise SchedulerError(
+            "The schedule interval must be an integer from 1 to 44640 minutes."
+        )
+    return value
+
+
+def schedule(action: str, *, interval_minutes: int | None = None) -> dict[str, Any]:
     """Install, inspect, or remove the current user's collector schedule."""
     if action not in {"install", "status", "uninstall"}:
         raise SchedulerError(f"Unsupported schedule action: {action}")
+    if action == "install":
+        requested_interval = _validate_interval_minutes(
+            DEFAULT_INTERVAL_MINUTES if interval_minutes is None else interval_minutes
+        )
+    elif interval_minutes is not None:
+        raise SchedulerError(
+            "The schedule interval can only be set when installing a schedule."
+        )
+    else:
+        requested_interval = DEFAULT_INTERVAL_MINUTES
     manifest_path = _manifest_path()
     previous = _managed_spec(manifest_path)
     if previous is None:
@@ -1023,7 +1179,7 @@ def schedule(action: str) -> dict[str, Any]:
         assert previous is not None
         return {
             "installed": True,
-            "intervalSeconds": SCHEDULE_SECONDS,
+            "intervalSeconds": previous.interval_minutes * 60,
             "operatingSystem": previous.system,
             "repository": previous.root,
             "database": previous.db_path,
@@ -1033,7 +1189,7 @@ def schedule(action: str) -> dict[str, Any]:
         _remove_registration(previous)
         manifest_path.unlink()
         return {"installed": False, "intervalSeconds": SCHEDULE_SECONDS}
-    current = _current_spec()
+    current = _current_spec(requested_interval)
     try:
         _apply_registration(current, replace_existing=previous is not None)
     except OSError, SchedulerError:
@@ -1048,7 +1204,7 @@ def schedule(action: str) -> dict[str, Any]:
         ) from exc
     return {
         "installed": True,
-        "intervalSeconds": SCHEDULE_SECONDS,
+        "intervalSeconds": current.interval_minutes * 60,
         "operatingSystem": current.system,
         "repository": current.root,
         "database": current.db_path,

@@ -8,8 +8,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .app_server import AppServerError, get_live_status
-from .scheduler import SchedulerError, schedule
-from .storage import StorageError, load_statuses_since, save_status
+from .scheduler import (
+    DEFAULT_INTERVAL_MINUTES,
+    MAX_INTERVAL_MINUTES,
+    MIN_INTERVAL_MINUTES,
+    SchedulerError,
+    schedule,
+)
+from .storage import StorageError, get_database_stats, load_statuses_since, save_status
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -27,10 +33,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "--hours", required=True, type=_positive_finite_float, metavar="N"
     )
     history.add_argument("--db", metavar="PATH", help="SQLite database path.")
-    scheduler = commands.add_parser(
-        "schedule", help="Manage the 30-minute scheduled collector."
+    db_stats = commands.add_parser(
+        "db-stats", help="Show the saved snapshot count and database file size."
     )
-    scheduler.add_argument("action", choices=("install", "status", "uninstall"))
+    db_stats.add_argument("--db", metavar="PATH", help="SQLite database path.")
+    scheduler = commands.add_parser("schedule", help="Manage the scheduled collector.")
+    schedule_commands = scheduler.add_subparsers(dest="schedule_action", required=True)
+    install = schedule_commands.add_parser(
+        "install", help="Install or update the schedule."
+    )
+    install.add_argument(
+        "--interval-minutes",
+        type=_positive_interval_minutes,
+        metavar="N",
+        help=(
+            "Collection interval in minutes "
+            f"({MIN_INTERVAL_MINUTES} to {MAX_INTERVAL_MINUTES}; "
+            f"default: {DEFAULT_INTERVAL_MINUTES})."
+        ),
+    )
+    schedule_commands.add_parser("status", help="Show the installed schedule.")
+    schedule_commands.add_parser("uninstall", help="Remove the installed schedule.")
     return parser
 
 
@@ -42,6 +65,21 @@ def _positive_finite_float(value: str) -> float:
     if not math.isfinite(hours) or hours <= 0:
         raise argparse.ArgumentTypeError("hours must be a finite positive number")
     return hours
+
+
+def _positive_interval_minutes(value: str) -> int:
+    if not value.isascii() or not value.isdecimal():
+        raise argparse.ArgumentTypeError(
+            "interval-minutes must be an integer from "
+            f"{MIN_INTERVAL_MINUTES} to {MAX_INTERVAL_MINUTES}"
+        )
+    minutes = int(value)
+    if not MIN_INTERVAL_MINUTES <= minutes <= MAX_INTERVAL_MINUTES:
+        raise argparse.ArgumentTypeError(
+            "interval-minutes must be an integer from "
+            f"{MIN_INTERVAL_MINUTES} to {MAX_INTERVAL_MINUTES}"
+        )
+    return minutes
 
 
 def _print_json(result: Any) -> None:
@@ -68,8 +106,15 @@ def main(argv: list[str] | None = None) -> int:
                     "samples": samples,
                 }
             )
+        elif args.command == "db-stats":
+            _print_json(get_database_stats(args.db))
         else:
-            _print_json(schedule(args.action))
+            _print_json(
+                schedule(
+                    args.schedule_action,
+                    interval_minutes=getattr(args, "interval_minutes", None),
+                )
+            )
     except (AppServerError, SchedulerError, StorageError) as exc:
         print(f"codex-usage: {exc}", file=sys.stderr)
         return 1

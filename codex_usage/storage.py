@@ -107,6 +107,70 @@ def load_statuses_since(
         ) from exc
 
 
+def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
+    """Return snapshot count and the main SQLite file's on-disk size."""
+    path = resolve_db_path(db_path).absolute()
+    try:
+        size_bytes = path.stat().st_size
+    except FileNotFoundError:
+        return _database_stats_result(path, False, 0, 0)
+    except OSError as exc:
+        raise StorageError(f"Could not inspect usage database '{path}': {exc}") from exc
+
+    try:
+        database_uri = f"{path.as_uri()}?mode=ro"
+        with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+            version = _schema_version(connection)
+            if version > SCHEMA_VERSION:
+                raise StorageError(
+                    f"Database schema version {version} is newer than supported "
+                    f"version {SCHEMA_VERSION}."
+                )
+            if version not in (0, 1, SCHEMA_VERSION):
+                raise StorageError(
+                    f"Database schema version {version} is not supported."
+                )
+            if version == 0:
+                _reject_unversioned_user_tables(connection)
+                snapshot_count = 0
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM usage_snapshots"
+                ).fetchone()
+                if row is None:
+                    raise StorageError("Could not count usage snapshots.")
+                snapshot_count = int(row[0])
+        return _database_stats_result(path, True, snapshot_count, size_bytes)
+    except StorageError:
+        raise
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise StorageError(f"Could not inspect usage database '{path}': {exc}") from exc
+
+
+def _database_stats_result(
+    path: Path, exists: bool, snapshot_count: int, size_bytes: int
+) -> dict[str, Any]:
+    return {
+        "databasePath": str(path),
+        "exists": exists,
+        "usageSnapshots": {"snapshotCount": snapshot_count},
+        "sizeBytes": size_bytes,
+        "sizeHumanReadable": _format_file_size(size_bytes),
+    }
+
+
+def _format_file_size(size_bytes: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB")
+    size = float(size_bytes)
+    unit_index = 0
+    while size >= 1024 and unit_index < len(units) - 1:
+        size /= 1024
+        unit_index += 1
+    if unit_index == 0:
+        return f"{size_bytes} B"
+    return f"{size:.1f} {units[unit_index]}"
+
+
 def _schema_version(connection: sqlite3.Connection) -> int:
     row = connection.execute("PRAGMA user_version").fetchone()
     if row is None:
@@ -127,8 +191,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         return
     if version == 0:
         _reject_unversioned_user_tables(connection)
-        connection.execute(
-            """
+        connection.execute("""
             CREATE TABLE usage_snapshots (
                 id INTEGER PRIMARY KEY,
                 collected_at TEXT NOT NULL,
@@ -145,8 +208,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
                 individual_limit_remaining_percent INTEGER,
                 individual_limit_resets_at TEXT
             )
-            """
-        )
+            """)
         connection.execute(
             "CREATE INDEX usage_snapshots_collected_at_id "
             "ON usage_snapshots (collected_at, id)"
@@ -154,12 +216,10 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return
 
-    connection.execute(
-        """
+    connection.execute("""
         ALTER TABLE usage_snapshots ADD COLUMN individual_limit_present
         INTEGER NOT NULL DEFAULT 0 CHECK (individual_limit_present IN (0, 1))
-        """
-    )
+        """)
     connection.execute(
         "ALTER TABLE usage_snapshots ADD COLUMN individual_limit_limit TEXT"
     )
