@@ -369,6 +369,12 @@ def _systemd_escape(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _systemd_escape_path(value: str) -> str:
+    _validate_value("systemd unit path", value)
+    # WorkingDirectory consumes the path directly, so only escape specifiers.
+    return value.replace("%", "%%")
+
+
 def _systemd_escape_exec(value: str) -> str:
     return _systemd_escape(value).replace("$", "$$")
 
@@ -380,7 +386,7 @@ def _systemd_service(spec: JobSpec) -> bytes:
         "",
         "[Service]",
         "Type=oneshot",
-        f"WorkingDirectory={_systemd_escape(spec.root)}",
+        f"WorkingDirectory={_systemd_escape_path(spec.root)}",
         f"Environment={_systemd_escape(f'PATH={spec.environment_path}')}",
         f"Environment={_systemd_escape(f'CODEX_USAGE_DB={spec.db_path}')}",
         f"ExecStart={_systemd_escape_exec(spec.mise)} run collect",
