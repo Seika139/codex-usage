@@ -1,7 +1,7 @@
 [project]
 name = "codex-usage"
 version = "0.1.0"
-description = "A cross-platform CLI for reading current Codex rate limits."
+description = "A cross-platform CLI for reading Codex usage and rate limits."
 readme = "README.md"
 requires-python = ">=3.12,<3.16"
 dependencies = []

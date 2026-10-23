@@ -5,7 +5,7 @@
 #USAGE arg "[subcommand]" help="実行するサブコマンド" {
 #USAGE   choices "install" "status" "uninstall"
 #USAGE }
-#USAGE flag "--interval-minutes <minutes>" help="収集間隔（分、1〜44640。省略時は30）"
+#USAGE flag "-I --interval-minutes <minutes>" help="収集間隔（分、1〜44640。省略時は30）"
 
 set -euo pipefail
 
@@ -17,7 +17,7 @@ cd "$ROOT_DIR" || exit 1
 source "${ROOT_DIR}/mise/common.sh"
 
 SCHEDULE_SUBCOMMANDS=(
-  $'install\t使用状況を記録するスケジュールを導入する（既定は30分間隔）'
+  $'install\t使用状況を記録するスケジュールを導入する\t-I / --interval-minutes <minutes> で収集間隔を指定可能（既定は30分間隔）'
   $'status\t定期実行するスケジューラの設定状況を表示する'
   $'uninstall\t使用状況を記録するスケジュールを削除する'
 )
