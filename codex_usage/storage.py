@@ -169,6 +169,45 @@ def load_statuses_since(
         ) from exc
 
 
+def load_latest_rate_limit_snapshot(
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Load the newest saved snapshot's rate-limit fields without modifying the DB."""
+    path = resolve_db_path(db_path)
+    if not path.exists():
+        return None
+
+    try:
+        database_uri = f"{path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+            version = _schema_version(connection)
+            if version > SCHEMA_VERSION:
+                raise StorageError(
+                    f"Database schema version {version} is newer than supported "
+                    f"version {SCHEMA_VERSION}."
+                )
+            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+                raise StorageError(
+                    f"Database schema version {version} is not supported."
+                )
+            if version == 0:
+                _reject_unversioned_user_tables(connection)
+                return None
+            row = connection.execute(
+                "SELECT collected_at, five_hour_present, five_hour_used_percent, "
+                "five_hour_resets_at, weekly_present, weekly_used_percent, "
+                "weekly_resets_at FROM usage_snapshots "
+                "ORDER BY collected_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            return None if row is None else _status_from_row(row)
+    except StorageError:
+        raise
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise StorageError(
+            f"Could not read the latest usage snapshot from '{path}': {exc}"
+        ) from exc
+
+
 def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
     """Return snapshot count and the main SQLite file's on-disk size."""
     path = resolve_db_path(db_path).absolute()
