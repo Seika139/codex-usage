@@ -237,13 +237,24 @@ def _format_alert(alert: RateLimitAlert) -> str:
         condition = "使い切りました"
     else:
         condition = f"残り{alert.threshold}%未満"
-    measured_at = f"（計測: {alert.collected_at}）" if alert.collected_at else ""
-    reset_at = alert.resets_at or "不明"
+    measured_at = (
+        f"（計測: {_format_discord_timestamp(alert.collected_at)}）"
+        if alert.collected_at
+        else ""
+    )
+    reset_at = _format_discord_timestamp(alert.resets_at) if alert.resets_at else "不明"
     return (
         f"【{alert.window_name}】{condition} — "
         f"計測時点の残り: {_format_percent(alert.remaining_percent)}%{measured_at}、"
         f"リセット日時: {reset_at}"
     )
+
+
+def _format_discord_timestamp(value: str) -> str:
+    moment = _parse_timestamp(value)
+    if moment is None:
+        return value
+    return f"<t:{int(moment.timestamp())}:f>"
 
 
 def _format_percent(value: float) -> str:
