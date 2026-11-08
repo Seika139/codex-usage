@@ -30,8 +30,8 @@ class RateLimitAlert:
 
 
 _WINDOWS = (
-    ("fiveHour", "5時間枠（5h）"),
-    ("weekly", "週間枠（1w）"),
+    ("fiveHour", "5時間枠"),
+    ("weekly", "1週間枠"),
 )
 _THRESHOLDS = (50, 20, 5, 0)
 _RESET_TIME_JITTER = timedelta(seconds=1)

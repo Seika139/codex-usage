@@ -77,7 +77,7 @@ class FindRateLimitAlertsTests(unittest.TestCase):
                     [(alert.window_name, alert.threshold) for alert in alerts],
                     [
                         (
-                            "5時間枠（5h）" if window == "fiveHour" else "週間枠（1w）",
+                            "5時間枠" if window == "fiveHour" else "1週間枠",
                             50,
                         )
                     ],
