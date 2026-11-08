@@ -1,7 +1,11 @@
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from codex_usage.notifications import find_rate_limit_alerts
+from codex_usage.notifications import (
+    RateLimitAlert,
+    _format_alert,
+    find_rate_limit_alerts,
+)
 
 
 class FindRateLimitAlertsTests(unittest.TestCase):
@@ -82,6 +86,54 @@ class FindRateLimitAlertsTests(unittest.TestCase):
                         )
                     ],
                 )
+
+
+class FormatRateLimitAlertTests(unittest.TestCase):
+    def test_formats_utc_and_offset_timestamps_for_discord(self) -> None:
+        utc_alert = _alert(
+            collected_at="2026-11-08T17:03:44Z",
+            resets_at="2026-11-11T22:25:45Z",
+        )
+        offset_alert = _alert(
+            collected_at="2026-11-09T02:03:44+09:00",
+            resets_at="2026-11-12T07:25:45+09:00",
+        )
+
+        formatted = _format_alert(utc_alert)
+
+        self.assertEqual(_format_alert(offset_alert), formatted)
+        self.assertIn("計測: <t:1794157424:f>", formatted)
+        self.assertIn("リセット日時: <t:1794435945:f>", formatted)
+
+    def test_falls_back_to_raw_text_for_invalid_or_naive_timestamps(self) -> None:
+        alert = _alert(
+            collected_at="not-a-timestamp",
+            resets_at="2026-11-11T22:25:45",
+        )
+
+        formatted = _format_alert(alert)
+
+        self.assertIn("計測: not-a-timestamp", formatted)
+        self.assertIn("リセット日時: 2026-11-11T22:25:45", formatted)
+
+    def test_preserves_missing_timestamp_display(self) -> None:
+        formatted = _format_alert(_alert(collected_at=None, resets_at=None))
+
+        self.assertNotIn("計測:", formatted)
+        self.assertIn("リセット日時: 不明", formatted)
+
+
+def _alert(
+    collected_at: str | None,
+    resets_at: str | None,
+) -> RateLimitAlert:
+    return RateLimitAlert(
+        window_name="週間枠（1w）",
+        threshold=20,
+        remaining_percent=6.0,
+        collected_at=collected_at,
+        resets_at=resets_at,
+    )
 
 
 def _status(
