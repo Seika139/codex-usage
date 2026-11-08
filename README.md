@@ -35,7 +35,7 @@ mise exec -- uv run --locked python -m codex_usage collect --db ./codex-usage.sq
 mise exec -- uv run --locked python -m codex_usage collect --active-within-hours 72
 ```
 
-`collect`は保存前に直前のスナップショットと5時間枠・週間枠の残量を比較します。残量が50%、20%、5%を下回ったとき、または0%以下になったときに通知します。1回の計測で複数の段階を越えた場合は該当する段階を1つのDiscordメッセージにまとめます。初回の計測は比較対象がないため通知しません。リセット日時が前回から変わっていれば新しい枠として残量100%から比較します。
+`collect`は保存前に直前のスナップショットと5時間枠・週間枠の残量を比較します。残量が50%、20%、5%を下回ったとき、または0%以下になったときに通知します。1回の計測で複数の段階を越えた場合は該当する段階を1つのDiscordメッセージにまとめます。初回の計測は比較対象がないため通知しません。リセット日時の差が1秒以内なら同じ枠として扱い、2秒以上の差では前回残量を100%として比較します。
 
 通知先は`CODEX_USAGE_DISCORD_WEBHOOK_URL`環境変数、またはユーザーデータディレクトリに置く`discord-webhook-url`ファイルで指定します。環境変数が設定されている場合はそちらを優先します。環境変数は手動実行に使えますが、定期実行のスケジューラーへは渡さないため、定期通知にはsecret fileを使ってください。たとえば既定のLinux DBを使う場合は`~/.local/share/codex-usage/discord-webhook-url`です。`CODEX_USAGE_DB`でDBを指定した場合は、そのDBのディレクトリをsecret fileの場所として使います。`--db`はsecret fileの場所に影響しません。ファイルにはWebhook URLだけを保存し、Linux/macOSではアクセス権を`600`にしてください。
 

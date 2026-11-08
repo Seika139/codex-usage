@@ -5,7 +5,7 @@ import os
 import stat
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -34,6 +34,7 @@ _WINDOWS = (
     ("weekly", "週間枠（1w）"),
 )
 _THRESHOLDS = (50, 20, 5, 0)
+_RESET_TIME_JITTER = timedelta(seconds=1)
 
 
 def find_rate_limit_alerts(
@@ -57,10 +58,10 @@ def find_rate_limit_alerts(
         if (
             old_resets_at is not None
             and new_resets_at is not None
-            and old_resets_at != new_resets_at
+            and abs(new_resets_at - old_resets_at) > _RESET_TIME_JITTER
         ):
-            # A changed reset time marks a new quota period; its previous amount
-            # starts at 100%, even if the collector missed the exact rollover.
+            # Ignore one-second reset-time jitter; larger changes mark a new
+            # quota period whose previous amount starts at 100%.
             old_remaining = 100.0
 
         crossed = [
