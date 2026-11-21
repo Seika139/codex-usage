@@ -18,8 +18,8 @@ from .storage import StorageError, load_statuses_since, resolve_db_path
 
 DISPLAY_TZ = None
 TZ_LABEL = datetime.now().astimezone().tzname()
-FIVE_HOUR_RANGE = timedelta(hours=48)
-WEEKLY_RANGE = timedelta(days=14)
+FIVE_HOUR_RANGE = timedelta(hours=72)
+WEEKLY_RANGE = timedelta(days=21)
 
 
 class DashboardError(RuntimeError):
