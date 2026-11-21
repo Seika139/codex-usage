@@ -1,6 +1,6 @@
 # codex-usage
 
-Codex App Serverから5時間枠、週間枠、設定されている場合は月間の個別枠を取得し、SQLiteに時系列として保存します。`collect`はあわせてCodexのスレッド一覧を読み、スレッドIDごとの最新メタデータだけを保持します。モデル別利用量の照会は行いません。
+Codex App Serverから5時間枠、週間枠、設定されている場合は月間の個別枠を取得し、SQLiteに時系列として保存します。`collect`はあわせてCodexのスレッド一覧を読み、スレッドIDごとの最新メタデータだけを保持し、静的な利用枠ダッシュボードを更新します。モデル別利用量の照会は行いません。
 
 ## 必要なもの
 
@@ -18,7 +18,7 @@ mise exec -- uv run --locked python -m codex_usage status
 mise run status
 ```
 
-どちらも標準出力にはJSONを1つだけ出力します。エラーは標準エラー出力に出し、終了コードを0以外にします。通常のApp Server応答待ちには15秒のタイムアウトを設定しています。
+`status`と`collect`は標準出力にJSONを1つだけ出力します。エラーは標準エラー出力に出し、終了コードを0以外にします。通常のApp Server応答待ちには15秒のタイムアウトを設定しています。
 
 ## 利用枠の計測と履歴
 
@@ -46,6 +46,29 @@ mise run history --hours 168 --db ./codex-usage.sqlite3
 ```
 
 `--hours`（短縮形`-H`）は必須で、`--db PATH`は省略できます。`-v`または`--verbose`を付けると、レート制限履歴とは別に、DB内のスレッドごとの最新メタデータを`latestThreads`として一度だけ返します。この一覧は`--hours`の期間にかかわらず最新の保存状態で、各スレッドに最終観測時刻`lastSeenAt`を含みます。通常出力には`latestThreads`を含めません。
+
+## スマホ向け静的ダッシュボード
+
+`collect`はスナップショットを保存したあと、DBごとの専用ディレクトリに自己完結した静的HTMLページを生成します。ページには5時間枠の残率を直近24時間、週間枠の残率を直近7日間で表示します。値はクレジット数ではなく、App Serverが返す利用率から算出した割合です。枠データの欠測は線を途切れさせます。観測間隔から推定した目安（観測間隔の下側中央値の2.5倍）を超えた場合も線を分けますが、計測点が少ないと間隔を推定できず、長い空白が線でつながる場合があります。ページにはスレッド情報やDBのパス、Webhook URLを含めません。
+
+手動で再生成する場合は次を実行します。`--db`で別DBを指定すると、そのDB専用の別ディレクトリに生成され、他のダッシュボードを上書きしません。コマンドはHTMLファイルの絶対パスを出力します。
+
+```sh
+mise run dashboard
+mise run dashboard --db ./codex-usage.sqlite3
+```
+
+常駐Webアプリは必要ありません。Tailscale Serveで生成したHTMLファイルだけをtailnet内へ配信できます。定期収集が実行されるたびに配信ファイルも更新されますが、すでにブラウザーで開いているページは自動更新しないため、新しい計測を見るにはページを再読み込みしてください。手動で最新化する場合は、まず`mise run dashboard`でHTMLを再生成してからブラウザーを再読み込みします。Linuxではファイル配信の設定にroot権限が必要です。Serveの引数には上のコマンドが表示する`index.html`のパスを使います。
+
+```sh
+dashboard_path="$(mise run dashboard)"
+sudo tailscale serve --bg "$dashboard_path"
+sudo tailscale serve status
+```
+
+表示されたHTTPS URLをスマホのブラウザーで開きます。スマホも同じtailnetへ接続している必要があり、Serveはtailnetのアクセス制御に従います。通常はVPSの新しい受信ポートを開ける必要はありません。Tailscale ServeはHTTPS証明書とtailnet内向け配信を提供します。[Tailscale Serveの公式ドキュメント](https://tailscale.com/docs/reference/tailscale-cli/serve)を参照してください。
+
+Serve対象は生成された`index.html`だけにしてください。DBやWebhook secret fileがある親ディレクトリ全体は配信しないでください。ページは収集時に更新される静的スナップショットなので、表示できるのは最後に成功した収集までのデータです。
 
 SQLiteの保存先は`--db PATH`、または`CODEX_USAGE_DB`で指定できます。既定ではWindowsは`%LOCALAPPDATA%/codex-usage/usage.sqlite3`、macOSは`~/Library/Application Support/codex-usage/usage.sqlite3`、Linuxは`$XDG_DATA_HOME/codex-usage/usage.sqlite3`（未設定なら`~/.local/share/codex-usage/usage.sqlite3`）です。履歴の読み込みでは、DBファイルや親ディレクトリが未作成なら何も作らず、空の`snapshots`を返します。
 
