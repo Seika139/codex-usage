@@ -16,8 +16,7 @@ from datetime import UTC, datetime
 from typing import Any, TextIO
 
 REQUEST_TIMEOUT_SECONDS = 15.0
-THREAD_USAGE_REQUEST_TIMEOUT_SECONDS = 65.0
-MODEL_USAGE_COLLECTION_TIMEOUT_SECONDS = 120.0
+THREAD_LIST_COLLECTION_TIMEOUT_SECONDS = 120.0
 GRACEFUL_EXIT_TIMEOUT_SECONDS = 0.5
 FORCED_EXIT_TIMEOUT_SECONDS = 3.0
 READER_JOIN_TIMEOUT_SECONDS = 0.75
@@ -47,10 +46,6 @@ class AppServerError(RuntimeError):
 
 class _AppServerRemoteError(AppServerError):
     """An error returned for one JSON-RPC request by Codex App Server."""
-
-
-class _ModelUsageDeadlineExceeded(AppServerError):
-    """The bounded model usage collection period has expired."""
 
 
 class _StderrTail:
@@ -675,7 +670,7 @@ def _status_from_result(result: Any) -> dict[str, Any]:
             grouped[name] = _normalize_limit_bucket(bucket)
 
     return {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "source": "live",
         "collectedAt": datetime.now(UTC)
         .isoformat(timespec="seconds")
@@ -719,9 +714,6 @@ def _thread_entries_from_result(
                 "updatedAt": updated_at,
                 "recencyAt": recency_at,
                 "archived": archived,
-                "usageStatus": "not_targeted",
-                "observedAt": None,
-                "models": [],
             }
         )
 
@@ -731,11 +723,6 @@ def _thread_entries_from_result(
     ):
         raise AppServerError("App Server returned an invalid thread list cursor.")
     return thread_entries, next_cursor
-
-
-def _thread_ids_from_result(result: Any) -> tuple[list[str], str | None]:
-    entries, next_cursor = _thread_entries_from_result(result, archived=False)
-    return [entry["threadId"] for entry in entries], next_cursor
 
 
 def _safe_thread_source(source: Any) -> str | None:
@@ -760,89 +747,21 @@ def _safe_thread_source(source: Any) -> str | None:
     return None
 
 
-def _nonnegative_integer(value: Any, field: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise AppServerError(f"App Server returned an invalid {field} value.")
-    return value
-
-
-def _normalize_thread_usage(value: Any) -> list[dict[str, Any]] | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise AppServerError("App Server returned a malformed thread usage value.")
-    groups = value.get("groups")
-    if not isinstance(groups, list):
-        raise AppServerError("App Server returned malformed thread usage groups.")
-
-    normalized_by_model: dict[str | None, dict[str, Any]] = {}
-    for group in groups:
-        if not isinstance(group, dict):
-            raise AppServerError("App Server returned a malformed model usage group.")
-        model = group.get("model")
-        if not isinstance(model, str) or not model:
-            model = None
-        normalized_group = {
-            "model": model,
-            "estimatedUsageCreditsMicros": _nonnegative_integer(
-                group.get("estimatedUsageCreditsMicros"),
-                "estimatedUsageCreditsMicros",
-            ),
-        }
-        for field in (
-            "inputTokens",
-            "cachedInputTokens",
-            "outputTokens",
-            "totalTokens",
-        ):
-            token_count = group.get(field)
-            normalized_group[field] = (
-                None
-                if token_count is None
-                else _nonnegative_integer(token_count, field)
-            )
-        aggregate = normalized_by_model.get(model)
-        if aggregate is None:
-            normalized_by_model[model] = normalized_group
-            continue
-        for field in (
-            "estimatedUsageCreditsMicros",
-            "inputTokens",
-            "cachedInputTokens",
-            "outputTokens",
-            "totalTokens",
-        ):
-            if aggregate[field] is None or normalized_group[field] is None:
-                aggregate[field] = None
-            else:
-                aggregate[field] += normalized_group[field]
-    return [
-        normalized_by_model[key]
-        for key in sorted(normalized_by_model, key=lambda x: x or "")
-    ]
-
-
-def _model_usage_from_app_server(
+def _thread_inventory_from_app_server(
     process: subprocess.Popen[str],
     events: queue.Queue[tuple[str, Any]],
     stdin: TextIO,
     request_id: int,
-    active_within_hours: float,
+    collected_at: str,
 ) -> dict[str, Any]:
-    deadline = time.monotonic() + MODEL_USAGE_COLLECTION_TIMEOUT_SECONDS
+    deadline = time.monotonic() + THREAD_LIST_COLLECTION_TIMEOUT_SECONDS
     observed_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
-    def request(
-        method: str,
-        params: dict[str, Any] | None = None,
-        timeout_seconds: float = REQUEST_TIMEOUT_SECONDS,
-    ) -> dict[str, Any]:
+    def request(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         nonlocal request_id
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise _ModelUsageDeadlineExceeded(
-                "Timed out collecting model usage from Codex App Server."
-            )
+            raise AppServerError("Timed out collecting the Codex thread list.")
         request_id += 1
         message: dict[str, Any] = {"method": method, "id": request_id}
         if params is not None:
@@ -852,7 +771,7 @@ def _model_usage_from_app_server(
             events,
             process,
             request_id,
-            timeout_seconds=min(timeout_seconds, remaining),
+            timeout_seconds=min(REQUEST_TIMEOUT_SECONDS, remaining),
         )
 
     try:
@@ -866,11 +785,7 @@ def _model_usage_from_app_server(
                     "limit": 100,
                     "archived": archived,
                     "sourceKinds": [
-                        "cli",
-                        "vscode",
-                        "exec",
-                        "appServer",
-                        "subAgent",
+                        "cli", "vscode", "exec", "appServer", "subAgent",
                         "subAgentReview",
                         "subAgentCompact",
                         "subAgentThreadSpawn",
@@ -887,9 +802,23 @@ def _model_usage_from_app_server(
                 )
                 for thread in page_threads:
                     thread_id = thread["threadId"]
-                    if thread_id not in seen_thread_ids:
-                        threads.append(thread)
-                        seen_thread_ids.add(thread_id)
+                    if thread_id in seen_thread_ids:
+                        continue
+                    activity_at = (
+                        thread["recencyAt"]
+                        if thread["recencyAt"] is not None
+                        else thread["updatedAt"]
+                    )
+                    thread["activityAt"] = activity_at
+                    thread["activityAtField"] = (
+                        "recencyAt"
+                        if thread["recencyAt"] is not None
+                        else "updatedAt" if thread["updatedAt"] is not None
+                        else None
+                    )
+                    thread["lastSeenAt"] = collected_at
+                    threads.append(thread)
+                    seen_thread_ids.add(thread_id)
                 if cursor is None:
                     break
                 if cursor in seen_cursors:
@@ -899,108 +828,11 @@ def _model_usage_from_app_server(
         return {
             "status": "unavailable",
             "observedAt": observed_at,
-            "threadCount": None,
-            "retrievedThreadCount": 0,
-            "unavailableThreadCount": 0,
-            "failedThreadCount": 0,
             "threadListComplete": False,
-            "listedThreadCount": None,
-            "attemptedThreadCount": 0,
-            "notAttemptedThreadCount": None,
-            "targetedThreadCount": None,
-            "notTargetedThreadCount": None,
-            "activeWithinHours": active_within_hours,
+            "threadCount": None,
             "threads": [],
         }
 
-    active_cutoff = time.time() - active_within_hours * 60 * 60
-    targeted_threads: list[dict[str, Any]] = []
-    for thread in threads:
-        if thread["recencyAt"] is not None:
-            thread["activityAt"] = thread["recencyAt"]
-            thread["activityAtField"] = "recencyAt"
-        elif thread["updatedAt"] is not None:
-            thread["activityAt"] = thread["updatedAt"]
-            thread["activityAtField"] = "updatedAt"
-        else:
-            thread["activityAt"] = None
-            thread["activityAtField"] = None
-        if thread["activityAt"] is not None and thread["activityAt"] >= active_cutoff:
-            targeted_threads.append(thread)
-    for thread in targeted_threads:
-        thread["usageStatus"] = "not_attempted"
-
-    retrieved_thread_count = 0
-    unavailable_thread_count = 0
-    failed_thread_count = 0
-    attempted_thread_count = 0
-    for thread in targeted_threads:
-        thread["observedAt"] = (
-            datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-        )
-        try:
-            response = request(
-                "account/usage/read",
-                {"threadId": thread["threadId"]},
-                THREAD_USAGE_REQUEST_TIMEOUT_SECONDS,
-            )
-        except _AppServerRemoteError:
-            attempted_thread_count += 1
-            failed_thread_count += 1
-            thread["usageStatus"] = "failed"
-            thread["observedAt"] = (
-                datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-            )
-            continue
-        except _ModelUsageDeadlineExceeded:
-            break
-        except AppServerError:
-            attempted_thread_count += 1
-            failed_thread_count += 1
-            thread["usageStatus"] = "failed"
-            thread["observedAt"] = (
-                datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-            )
-            break
-
-        attempted_thread_count += 1
-        thread["observedAt"] = (
-            datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-        )
-        try:
-            result = response["result"]
-            if not isinstance(result, dict):
-                raise AppServerError(
-                    "App Server returned a malformed thread usage result."
-                )
-            groups = _normalize_thread_usage(result.get("threadUsage"))
-        except AppServerError:
-            failed_thread_count += 1
-            thread["usageStatus"] = "failed"
-            continue
-
-        if groups is None:
-            unavailable_thread_count += 1
-            thread["usageStatus"] = "unavailable"
-            continue
-        retrieved_thread_count += 1
-        thread["usageStatus"] = "success"
-        thread["models"] = groups
-
-    attempted_set = {
-        thread["threadId"] for thread in targeted_threads[:attempted_thread_count]
-    }
-    for thread in targeted_threads:
-        if thread["threadId"] not in attempted_set:
-            thread["usageStatus"] = "not_attempted"
-            thread["observedAt"] = None
-
-    if not targeted_threads or retrieved_thread_count == len(targeted_threads):
-        status = "complete"
-    elif retrieved_thread_count:
-        status = "partial"
-    else:
-        status = "unavailable"
     threads.sort(
         key=lambda thread: (
             thread["activityAt"] is not None,
@@ -1010,27 +842,15 @@ def _model_usage_from_app_server(
         reverse=True,
     )
     return {
-        "status": status,
+        "status": "complete",
         "observedAt": observed_at,
-        "threadCount": len(threads),
-        "retrievedThreadCount": retrieved_thread_count,
-        "unavailableThreadCount": unavailable_thread_count,
-        "failedThreadCount": failed_thread_count,
         "threadListComplete": True,
-        "listedThreadCount": len(threads),
-        "attemptedThreadCount": attempted_thread_count,
-        "notAttemptedThreadCount": len(targeted_threads) - attempted_thread_count,
-        "targetedThreadCount": len(targeted_threads),
-        "notTargetedThreadCount": len(threads) - len(targeted_threads),
-        "activeWithinHours": active_within_hours,
+        "threadCount": len(threads),
         "threads": threads,
     }
 
 
-def get_live_status(
-    include_model_usage: bool = False,
-    active_within_hours: float = 24.0,
-) -> dict[str, Any]:
+def get_live_status(include_thread_inventory: bool = False) -> dict[str, Any]:
     codex_command, child_env = _resolve_codex_command()
     command = (
         _windows_launcher_command(codex_command) if os.name == "nt" else codex_command
@@ -1132,9 +952,9 @@ def get_live_status(
         _send_message(process.stdin, {"method": "account/rateLimits/read", "id": 1})
         response = _receive_response(events, process, 1)
         status = _status_from_result(response["result"])
-        if include_model_usage:
-            status["modelUsage"] = _model_usage_from_app_server(
-                process, events, process.stdin, 1, active_within_hours
+        if include_thread_inventory:
+            status["threadInventory"] = _thread_inventory_from_app_server(
+                process, events, process.stdin, 1, status["collectedAt"]
             )
     except AppServerError as exc:
         failure = exc

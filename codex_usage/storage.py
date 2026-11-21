@@ -180,7 +180,7 @@ def load_latest_rate_limit_snapshot(
                     f"Database schema version {version} is newer than supported "
                     f"version {SCHEMA_VERSION}."
                 )
-            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
                 raise StorageError(
                     f"Database schema version {version} is not supported."
                 )
@@ -473,7 +473,8 @@ def _create_latest_threads_table(connection: sqlite3.Connection) -> None:
             updated_at INTEGER,
             recency_at INTEGER,
             archived INTEGER CHECK (archived IN (0, 1) OR archived IS NULL),
-            last_seen_at TEXT NOT NULL
+            last_seen_at TEXT NOT NULL,
+            last_snapshot_id INTEGER NOT NULL
         )
         """)
     connection.execute(
@@ -487,10 +488,10 @@ def _migrate_thread_history_to_latest(connection: sqlite3.Connection) -> None:
     connection.execute("""
         INSERT INTO threads (
             thread_id, parent_thread_id, source, updated_at, recency_at,
-            archived, last_seen_at
+            archived, last_seen_at, last_snapshot_id
         )
         SELECT thread_id, parent_thread_id, source, updated_at, recency_at,
-            archived, collected_at
+            archived, collected_at, snapshot_id
         FROM (
             SELECT thread_observations.thread_id,
                 thread_observations.parent_thread_id,
@@ -499,6 +500,7 @@ def _migrate_thread_history_to_latest(connection: sqlite3.Connection) -> None:
                 thread_observations.recency_at,
                 thread_observations.archived,
                 usage_snapshots.collected_at,
+                usage_snapshots.id AS snapshot_id,
                 ROW_NUMBER() OVER (
                     PARTITION BY thread_observations.thread_id
                     ORDER BY usage_snapshots.collected_at DESC,
@@ -522,6 +524,7 @@ def _upsert_latest_threads(
     connection: sqlite3.Connection,
     threads: list[dict[str, Any]],
     last_seen_at: str,
+    snapshot_id: int,
 ) -> None:
     if not threads:
         return
@@ -529,16 +532,19 @@ def _upsert_latest_threads(
         """
         INSERT INTO threads (
             thread_id, parent_thread_id, source, updated_at, recency_at,
-            archived, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            archived, last_seen_at, last_snapshot_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
             parent_thread_id = excluded.parent_thread_id,
             source = excluded.source,
             updated_at = excluded.updated_at,
             recency_at = excluded.recency_at,
             archived = excluded.archived,
-            last_seen_at = excluded.last_seen_at
-        WHERE excluded.last_seen_at >= threads.last_seen_at
+            last_seen_at = excluded.last_seen_at,
+            last_snapshot_id = excluded.last_snapshot_id
+        WHERE excluded.last_seen_at > threads.last_seen_at
+            OR (excluded.last_seen_at = threads.last_seen_at
+                AND excluded.last_snapshot_id > threads.last_snapshot_id)
         """,
         [
             (
@@ -548,7 +554,8 @@ def _upsert_latest_threads(
                 thread["updatedAt"],
                 thread["recencyAt"],
                 None if thread["archived"] is None else int(thread["archived"]),
-                thread.get("lastSeenAt") or last_seen_at,
+                last_seen_at,
+                snapshot_id,
             )
             for thread in threads
         ],
@@ -686,7 +693,7 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
     five_hour = status["fiveHour"]
     weekly = status["weekly"]
     individual_limit = status.get("individualLimit")
-    connection.execute(
+    snapshot_id = connection.execute(
         """
         INSERT INTO usage_snapshots (
             collected_at,
@@ -717,84 +724,37 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
             None if individual_limit is None else individual_limit["remainingPercent"],
             None if individual_limit is None else individual_limit["resetsAt"],
         ),
-    )
+    ).lastrowid
     inventory = status.get("threadInventory")
     if inventory is not None and inventory.get("threadListComplete") is True:
         _upsert_latest_threads(
             connection,
             inventory["threads"],
-            inventory["observedAt"],
+            status["collectedAt"],
+            snapshot_id,
         )
 
-def _estimate_period(
-    connection: sqlite3.Connection,
-    thread_id: str,
-    model: str,
-    observed_at: str,
-    current: dict[str, Any],
-) -> dict[str, Any]:
-    previous = connection.execute(
-        """
-        SELECT observed_at, estimated_usage_credits_micros, input_tokens,
-            cached_input_tokens, output_tokens, total_tokens
-        FROM thread_model_usage
-        WHERE thread_id = ? AND model = ?
-        ORDER BY observed_at DESC, snapshot_id DESC
-        LIMIT 1
-        """,
-        (thread_id, model),
-    ).fetchone()
-    estimate: dict[str, Any] = {
-        "status": "baseline",
-        "intervalStart": None,
-        "intervalEnd": observed_at,
-        "intervalSeconds": None,
-        "estimatedUsageCreditsMicros": None,
-        "inputTokens": None,
-        "cachedInputTokens": None,
-        "outputTokens": None,
-        "totalTokens": None,
+
+def _thread_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+    recency_at = row[4]
+    updated_at = row[3]
+    return {
+        "threadId": row[0],
+        "parentThreadId": row[1],
+        "source": row[2],
+        "updatedAt": updated_at,
+        "recencyAt": recency_at,
+        "activityAt": recency_at if recency_at is not None else updated_at,
+        "activityAtField": (
+            "recencyAt"
+            if recency_at is not None
+            else "updatedAt"
+            if updated_at is not None
+            else None
+        ),
+        "archived": None if row[5] is None else bool(row[5]),
+        "lastSeenAt": row[6],
     }
-    if previous is None:
-        return estimate
-
-    interval_start = previous[0]
-    estimate["intervalStart"] = interval_start
-    try:
-        end = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-        start = datetime.fromisoformat(interval_start.replace("Z", "+00:00"))
-        interval_seconds = (end - start).total_seconds()
-    except AttributeError, TypeError, ValueError:
-        interval_seconds = None
-    estimate["intervalSeconds"] = interval_seconds
-    if interval_seconds is None or interval_seconds <= 0:
-        estimate["status"] = "invalid_interval"
-        return estimate
-
-    fields = (
-        ("estimatedUsageCreditsMicros", "estimated_usage_credits_micros"),
-        ("inputTokens", "input_tokens"),
-        ("cachedInputTokens", "cached_input_tokens"),
-        ("outputTokens", "output_tokens"),
-        ("totalTokens", "total_tokens"),
-    )
-    if any(
-        current[name] is not None
-        and previous[index + 1] is not None
-        and current[name] < previous[index + 1]
-        for index, (name, _) in enumerate(fields)
-    ):
-        estimate["status"] = "counter_reset"
-        return estimate
-
-    estimate["status"] = "estimated"
-    for index, (name, _) in enumerate(fields):
-        old_value = previous[index + 1]
-        new_value = current[name]
-        estimate[name] = (
-            None if old_value is None or new_value is None else new_value - old_value
-        )
-    return estimate
 
 
 def _status_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
@@ -811,157 +771,6 @@ def _status_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
             else _individual_limit_from_row(row[7], row[8], row[9], row[10], row[11])
         ),
     }
-
-
-def _statuses_from_thread_rows(rows: Any) -> list[dict[str, Any]]:
-    statuses: list[dict[str, Any]] = []
-    previous_snapshot_id: int | None = None
-    previous_thread_id: str | None = None
-    for row in rows:
-        snapshot_id = row[0]
-        if snapshot_id != previous_snapshot_id:
-            status = _status_from_row(row[1:13])
-            if row[13] is None:
-                status["modelUsage"] = None
-            else:
-                status["modelUsage"] = {
-                    "status": row[13],
-                    "observedAt": row[14],
-                    "threadListComplete": bool(row[15]),
-                    "threadObservationScope": "history_range",
-                    "threadCount": row[16],
-                    "listedThreadCount": row[16],
-                    "targetedThreadCount": row[17],
-                    "notTargetedThreadCount": row[18],
-                    "attemptedThreadCount": row[19],
-                    "notAttemptedThreadCount": row[20],
-                    "retrievedThreadCount": row[21],
-                    "unavailableThreadCount": row[22],
-                    "failedThreadCount": row[23],
-                    "activeWithinHours": row[24],
-                    "threads": [],
-                }
-            statuses.append(status)
-            previous_snapshot_id = snapshot_id
-            previous_thread_id = None
-
-        thread_id = row[25]
-        if thread_id is None:
-            continue
-        model_usage = statuses[-1]["modelUsage"]
-        if model_usage is None:
-            continue
-        if thread_id != previous_thread_id:
-            recency_at = row[29]
-            updated_at = row[28]
-            activity_at = recency_at if recency_at is not None else updated_at
-            activity_at_field = (
-                "recencyAt"
-                if recency_at is not None
-                else "updatedAt"
-                if updated_at is not None
-                else None
-            )
-            thread = {
-                "threadId": thread_id,
-                "parentThreadId": row[26],
-                "source": row[27],
-                "updatedAt": row[28],
-                "recencyAt": row[29],
-                "activityAt": activity_at,
-                "activityAtField": activity_at_field,
-                "archived": None if row[30] is None else bool(row[30]),
-                "usageStatus": row[31],
-                "observedAt": row[32],
-                "models": [],
-            }
-            model_usage["threads"].append(thread)
-            previous_thread_id = thread_id
-        else:
-            thread = model_usage["threads"][-1]
-
-        model = row[33]
-        if model is not None:
-            thread["models"].append(
-                {
-                    "model": model or None,
-                    "cumulativeUsage": {
-                        "estimatedUsageCreditsMicros": row[34],
-                        "inputTokens": row[35],
-                        "cachedInputTokens": row[36],
-                        "outputTokens": row[37],
-                        "totalTokens": row[38],
-                    },
-                    "periodUsageEstimate": {
-                        "status": row[39],
-                        "intervalStart": row[40],
-                        "intervalEnd": row[41],
-                        "intervalSeconds": row[42],
-                        "estimatedUsageCreditsMicros": row[43],
-                        "inputTokens": row[44],
-                        "cachedInputTokens": row[45],
-                        "outputTokens": row[46],
-                        "totalTokens": row[47],
-                        "attribution": "detected_at_interval_end",
-                    },
-                }
-            )
-    return statuses
-
-
-def _model_usage_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any] | None:
-    status = row[0]
-    if status is None:
-        return None
-    thread_count = row[1]
-    retrieved_thread_count = row[2]
-    unavailable_thread_count = row[3]
-    failed_thread_count = row[4]
-    attempted_thread_count = (
-        retrieved_thread_count + unavailable_thread_count + failed_thread_count
-    )
-    return {
-        "status": status,
-        "threadListComplete": thread_count is not None,
-        "threadCount": thread_count,
-        "listedThreadCount": thread_count,
-        "attemptedThreadCount": attempted_thread_count,
-        "notAttemptedThreadCount": (
-            None if thread_count is None else thread_count - attempted_thread_count
-        ),
-        "retrievedThreadCount": retrieved_thread_count,
-        "unavailableThreadCount": unavailable_thread_count,
-        "failedThreadCount": failed_thread_count,
-        "models": [],
-    }
-
-
-def _statuses_from_current_rows(rows: Any) -> list[dict[str, Any]]:
-    statuses: list[dict[str, Any]] = []
-    previous_snapshot_id: int | None = None
-    for row in rows:
-        snapshot_id = row[0]
-        if snapshot_id != previous_snapshot_id:
-            status = _status_from_row(row[1:18])
-            statuses.append(status)
-            previous_snapshot_id = snapshot_id
-        else:
-            status = statuses[-1]
-        model = row[18]
-        if model is not None:
-            model_usage = status["modelUsage"]
-            if model_usage is not None:
-                model_usage["models"].append(
-                    {
-                        "model": model,
-                        "estimatedUsageCreditsMicros": row[19],
-                        "inputTokens": row[20],
-                        "cachedInputTokens": row[21],
-                        "outputTokens": row[22],
-                        "totalTokens": row[23],
-                    }
-                )
-    return statuses
 
 
 def _individual_limit_from_row(
