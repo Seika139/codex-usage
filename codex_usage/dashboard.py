@@ -354,6 +354,12 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
     }}
     .chart .axis {{ stroke: var(--grid); stroke-width: 1; }}
+    .chart .date-grid {{
+        stroke: var(--grid);
+        stroke-width: 1;
+        stroke-dasharray: 4 5;
+        opacity: 0.8;
+    }}
     .chart .series {{
       fill: none;
       stroke: currentColor;
@@ -383,11 +389,11 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     }}
     @media (max-width: 700px) {{
-      main {{ width: min(100% - 24px, 560px); padding-top: 20px 0 12px; }}
+      main {{ width: min(100% - 24px, 560px); padding: 20px 0 12px; }}
       .masthead {{ display: grid; align-items: start; gap: 15px; margin-bottom: 18px; }}
       .refresh {{ display: flex; align-items: center; justify-content: space-between; }}
-      .chart .date-label {{ font-size: 22px; }}
-      .chart .axis-label {{ font-size: 22px; }}
+      .chart .date-label {{ font-size: 18px; }}
+      .chart .axis-label {{ font-size: 18px; }}
       .cards {{ grid-template-columns: 1fr; gap: 12px; }}
       .card {{ padding: 17px 14px 11px; }}
     }}
@@ -571,11 +577,17 @@ def _render_chart(
         )
 
     x_labels = []
+    x_grid = []
     for fraction in (0.0, 0.5, 1.0):
         position = left + fraction * plot_width
         tick = start + (end - start) * fraction
         label = tick.astimezone(DISPLAY_TZ).strftime("%m/%d %H:%M")
         anchor = "start" if fraction == 0 else "end" if fraction == 1 else "middle"
+        x_grid.append(
+            f'<line class="date-grid" '
+            f'x1="{position:.1f}" y1="{top:.1f}" '
+            f'x2="{position:.1f}" y2="{bottom:.1f}" />'
+        )
         x_labels.append(
             f'<text class="date-label" x="{position:.1f}" y="{height - 12}" '
             f'text-anchor="{anchor}">{html.escape(label)}</text>'
@@ -606,7 +618,7 @@ def _render_chart(
     chart_label = html.escape(
         f"{accessible_title}; percentages from zero to one hundred"
     )
-    svg_content = "\n      ".join([*grid, *x_labels, *paths, *dots])
+    svg_content = "\n      ".join([*grid, *x_grid, *x_labels, *paths, *dots])
     return f"""<svg
   id="{chart_id}"
   class="chart"
