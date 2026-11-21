@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 DATABASE_FILENAME = "usage.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class StorageError(RuntimeError):
@@ -43,7 +43,7 @@ def resolve_db_path(db_path: str | Path | None = None) -> Path:
 
 
 def save_status(status: dict[str, Any], db_path: str | Path | None = None) -> None:
-    """Commit one normalized live status snapshot to SQLite."""
+    """Commit one rate-limit snapshot and the latest thread inventory to SQLite."""
     path = resolve_db_path(db_path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +61,7 @@ def save_status(status: dict[str, Any], db_path: str | Path | None = None) -> No
 def load_statuses_since(
     since: datetime, db_path: str | Path | None = None
 ) -> list[dict[str, Any]]:
-    """Load snapshots or thread observations at or after a UTC instant."""
+    """Load rate-limit snapshots at or after a UTC instant."""
     path = resolve_db_path(db_path)
     if not path.exists():
         return []
@@ -76,80 +76,18 @@ def load_statuses_since(
                     f"Database schema version {version} is newer than supported "
                     f"version {SCHEMA_VERSION}."
                 )
-            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
                 raise StorageError(
                     f"Database schema version {version} is not supported."
                 )
             if version == 0:
                 _reject_unversioned_user_tables(connection)
                 return []
-            if version == SCHEMA_VERSION:
-                rows = connection.execute(
-                    "SELECT usage_snapshots.id, collected_at, five_hour_present, "
-                    "five_hour_used_percent, five_hour_resets_at, weekly_present, "
-                    "weekly_used_percent, weekly_resets_at, individual_limit_present, "
-                    "individual_limit_limit, individual_limit_used, "
-                    "individual_limit_remaining_percent, individual_limit_resets_at, "
-                    "model_usage_collections.status, "
-                    "model_usage_collections.observed_at, "
-                    "model_usage_collections.thread_list_complete, "
-                    "model_usage_collections.listed_thread_count, "
-                    "model_usage_collections.targeted_thread_count, "
-                    "model_usage_collections.not_targeted_thread_count, "
-                    "model_usage_collections.attempted_thread_count, "
-                    "model_usage_collections.not_attempted_thread_count, "
-                    "model_usage_collections.retrieved_thread_count, "
-                    "model_usage_collections.unavailable_thread_count, "
-                    "model_usage_collections.failed_thread_count, "
-                    "model_usage_collections.active_within_hours, "
-                    "thread_observations.thread_id, "
-                    "thread_observations.parent_thread_id, "
-                    "thread_observations.source, thread_observations.updated_at, "
-                    "thread_observations.recency_at, thread_observations.archived, "
-                    "thread_observations.usage_status, "
-                    "thread_observations.observed_at, "
-                    "thread_model_usage.model, "
-                    "thread_model_usage.estimated_usage_credits_micros, "
-                    "thread_model_usage.input_tokens, "
-                    "thread_model_usage.cached_input_tokens, "
-                    "thread_model_usage.output_tokens, "
-                    "thread_model_usage.total_tokens, "
-                    "thread_model_usage.period_status, "
-                    "thread_model_usage.interval_start, "
-                    "thread_model_usage.interval_end, "
-                    "thread_model_usage.interval_seconds, "
-                    "thread_model_usage.delta_credits_micros, "
-                    "thread_model_usage.delta_input_tokens, "
-                    "thread_model_usage.delta_cached_input_tokens, "
-                    "thread_model_usage.delta_output_tokens, "
-                    "thread_model_usage.delta_total_tokens "
-                    "FROM usage_snapshots "
-                    "LEFT JOIN model_usage_collections "
-                    "ON usage_snapshots.id = model_usage_collections.snapshot_id "
-                    "LEFT JOIN thread_observations "
-                    "ON usage_snapshots.id = thread_observations.snapshot_id "
-                    "AND thread_observations.observed_at >= ? "
-                    "LEFT JOIN thread_model_usage "
-                    "ON thread_observations.snapshot_id = "
-                    "thread_model_usage.snapshot_id "
-                    "AND thread_observations.thread_id = thread_model_usage.thread_id "
-                    "WHERE collected_at >= ? OR EXISTS ("
-                    "SELECT 1 FROM thread_observations "
-                    "WHERE thread_observations.snapshot_id = usage_snapshots.id "
-                    "AND thread_observations.observed_at >= ?) "
-                    "ORDER BY collected_at ASC, usage_snapshots.id ASC, "
-                    "thread_observations.updated_at DESC, "
-                    "thread_observations.recency_at DESC, "
-                    "thread_observations.thread_id ASC, thread_model_usage.model ASC",
-                    (cutoff, cutoff, cutoff),
-                )
-                return _statuses_from_thread_rows(rows)
-
             individual_limit_columns = (
                 ", individual_limit_present, individual_limit_limit, "
                 "individual_limit_used, individual_limit_remaining_percent, "
                 "individual_limit_resets_at"
-                if version in (2, 3)
+                if version in (2, 3, 4, SCHEMA_VERSION)
                 else ""
             )
             rows = connection.execute(
@@ -166,6 +104,62 @@ def load_statuses_since(
     except (OSError, sqlite3.Error, ValueError) as exc:
         raise StorageError(
             f"Could not read usage history from '{path}': {exc}"
+        ) from exc
+
+
+def load_latest_threads(db_path: str | Path | None = None) -> list[dict[str, Any]]:
+    """Load the latest known metadata for each thread without modifying the DB."""
+    path = resolve_db_path(db_path)
+    if not path.exists():
+        return []
+
+    try:
+        database_uri = f"{path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+            version = _schema_version(connection)
+            if version > SCHEMA_VERSION:
+                raise StorageError(
+                    f"Database schema version {version} is newer than supported "
+                    f"version {SCHEMA_VERSION}."
+                )
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
+                raise StorageError(
+                    f"Database schema version {version} is not supported."
+                )
+            if version == 0:
+                _reject_unversioned_user_tables(connection)
+                return []
+            if version < 4:
+                return []
+            if version == SCHEMA_VERSION:
+                rows = connection.execute(
+                    "SELECT thread_id, parent_thread_id, source, updated_at, "
+                    "recency_at, archived, last_seen_at FROM threads "
+                    "ORDER BY recency_at DESC, updated_at DESC, thread_id ASC"
+                )
+            else:
+                rows = connection.execute(
+                    "SELECT thread_id, parent_thread_id, source, updated_at, "
+                    "recency_at, archived, collected_at AS last_seen_at FROM ("
+                    "SELECT thread_observations.thread_id, "
+                    "thread_observations.parent_thread_id, "
+                    "thread_observations.source, thread_observations.updated_at, "
+                    "thread_observations.recency_at, thread_observations.archived, "
+                    "usage_snapshots.collected_at, "
+                    "ROW_NUMBER() OVER (PARTITION BY thread_observations.thread_id "
+                    "ORDER BY usage_snapshots.collected_at DESC, "
+                    "usage_snapshots.id DESC) AS row_number "
+                    "FROM thread_observations JOIN usage_snapshots "
+                    "ON usage_snapshots.id = thread_observations.snapshot_id) "
+                    "WHERE row_number = 1 "
+                    "ORDER BY recency_at DESC, updated_at DESC, thread_id ASC"
+                )
+            return [_thread_from_row(row) for row in rows]
+    except StorageError:
+        raise
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise StorageError(
+            f"Could not read latest thread metadata from '{path}': {exc}"
         ) from exc
 
 
@@ -228,7 +222,7 @@ def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
                     f"Database schema version {version} is newer than supported "
                     f"version {SCHEMA_VERSION}."
                 )
-            if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+            if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
                 raise StorageError(
                     f"Database schema version {version} is not supported."
                 )
@@ -255,6 +249,35 @@ def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
         raise
     except (OSError, sqlite3.Error, ValueError) as exc:
         raise StorageError(f"Could not inspect usage database '{path}': {exc}") from exc
+
+
+def compact_database(db_path: str | Path | None = None) -> dict[str, Any]:
+    """Migrate the database and reclaim unused pages with an explicit VACUUM."""
+    path = resolve_db_path(db_path).absolute()
+    try:
+        size_before = path.stat().st_size
+    except FileNotFoundError as exc:
+        raise StorageError(f"Usage database does not exist: '{path}'.") from exc
+    except OSError as exc:
+        raise StorageError(f"Could not inspect usage database '{path}': {exc}") from exc
+
+    try:
+        with closing(sqlite3.connect(path)) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            _ensure_schema(connection)
+            connection.commit()
+            connection.execute("VACUUM")
+        size_after = path.stat().st_size
+        return {
+            "databasePath": str(path),
+            "sizeBeforeBytes": size_before,
+            "sizeAfterBytes": size_after,
+            "reclaimedBytes": max(size_before - size_after, 0),
+        }
+    except StorageError:
+        raise
+    except (OSError, sqlite3.Error) as exc:
+        raise StorageError(f"Could not compact usage database '{path}': {exc}") from exc
 
 
 def _database_stats_result(
@@ -372,7 +395,7 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             f"Database schema version {version} is newer than supported version "
             f"{SCHEMA_VERSION}; it was left unchanged."
         )
-    if version not in (0, 1, 2, 3, SCHEMA_VERSION):
+    if version not in (0, 1, 2, 3, 4, SCHEMA_VERSION):
         raise StorageError(f"Database schema version {version} is not supported.")
     if version == SCHEMA_VERSION:
         return
@@ -393,20 +416,14 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
                 individual_limit_limit TEXT,
                 individual_limit_used TEXT,
                 individual_limit_remaining_percent INTEGER,
-                individual_limit_resets_at TEXT,
-                model_usage_status TEXT,
-                model_usage_thread_count INTEGER,
-                model_usage_retrieved_thread_count INTEGER,
-                model_usage_unavailable_thread_count INTEGER,
-                model_usage_failed_thread_count INTEGER
+                individual_limit_resets_at TEXT
             )
             """)
         connection.execute(
             "CREATE INDEX usage_snapshots_collected_at_id "
             "ON usage_snapshots (collected_at, id)"
         )
-        _create_model_usage_table(connection)
-        _create_thread_usage_tables(connection)
+        _create_latest_threads_table(connection)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         return
 
@@ -439,7 +456,103 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
     if version == 3:
         _create_thread_usage_tables(connection)
+        connection.execute("PRAGMA user_version = 4")
+        version = 4
+
+    if version == 4:
+        _migrate_thread_history_to_latest(connection)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _create_latest_threads_table(connection: sqlite3.Connection) -> None:
+    connection.execute("""
+        CREATE TABLE threads (
+            thread_id TEXT PRIMARY KEY,
+            parent_thread_id TEXT,
+            source TEXT,
+            updated_at INTEGER,
+            recency_at INTEGER,
+            archived INTEGER CHECK (archived IN (0, 1) OR archived IS NULL),
+            last_seen_at TEXT NOT NULL
+        )
+        """)
+    connection.execute(
+        "CREATE INDEX threads_recency_updated "
+        "ON threads (recency_at DESC, updated_at DESC, thread_id)"
+    )
+
+
+def _migrate_thread_history_to_latest(connection: sqlite3.Connection) -> None:
+    _create_latest_threads_table(connection)
+    connection.execute("""
+        INSERT INTO threads (
+            thread_id, parent_thread_id, source, updated_at, recency_at,
+            archived, last_seen_at
+        )
+        SELECT thread_id, parent_thread_id, source, updated_at, recency_at,
+            archived, collected_at
+        FROM (
+            SELECT thread_observations.thread_id,
+                thread_observations.parent_thread_id,
+                thread_observations.source,
+                thread_observations.updated_at,
+                thread_observations.recency_at,
+                thread_observations.archived,
+                usage_snapshots.collected_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY thread_observations.thread_id
+                    ORDER BY usage_snapshots.collected_at DESC,
+                        usage_snapshots.id DESC
+                ) AS row_number
+            FROM thread_observations
+            JOIN usage_snapshots
+                ON usage_snapshots.id = thread_observations.snapshot_id
+        )
+        WHERE row_number = 1
+        """)
+    connection.execute("DROP TRIGGER IF EXISTS delete_thread_usage_after_snapshot")
+    connection.execute("DROP TRIGGER IF EXISTS delete_model_usage_after_snapshot")
+    connection.execute("DROP TABLE IF EXISTS thread_model_usage")
+    connection.execute("DROP TABLE IF EXISTS model_usage_collections")
+    connection.execute("DROP TABLE IF EXISTS thread_observations")
+    connection.execute("DROP TABLE IF EXISTS model_usage")
+
+
+def _upsert_latest_threads(
+    connection: sqlite3.Connection,
+    threads: list[dict[str, Any]],
+    last_seen_at: str,
+) -> None:
+    if not threads:
+        return
+    connection.executemany(
+        """
+        INSERT INTO threads (
+            thread_id, parent_thread_id, source, updated_at, recency_at,
+            archived, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET
+            parent_thread_id = excluded.parent_thread_id,
+            source = excluded.source,
+            updated_at = excluded.updated_at,
+            recency_at = excluded.recency_at,
+            archived = excluded.archived,
+            last_seen_at = excluded.last_seen_at
+        WHERE excluded.last_seen_at >= threads.last_seen_at
+        """,
+        [
+            (
+                thread["threadId"],
+                thread["parentThreadId"],
+                thread["source"],
+                thread["updatedAt"],
+                thread["recencyAt"],
+                None if thread["archived"] is None else int(thread["archived"]),
+                thread.get("lastSeenAt") or last_seen_at,
+            )
+            for thread in threads
+        ],
+    )
 
 
 def _add_model_usage_columns(connection: sqlite3.Connection) -> None:
@@ -573,7 +686,7 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
     five_hour = status["fiveHour"]
     weekly = status["weekly"]
     individual_limit = status.get("individualLimit")
-    cursor = connection.execute(
+    connection.execute(
         """
         INSERT INTO usage_snapshots (
             collected_at,
@@ -587,13 +700,8 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
             individual_limit_limit,
             individual_limit_used,
             individual_limit_remaining_percent,
-            individual_limit_resets_at,
-            model_usage_status,
-            model_usage_thread_count,
-            model_usage_retrieved_thread_count,
-            model_usage_unavailable_thread_count,
-            model_usage_failed_thread_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            individual_limit_resets_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             status["collectedAt"],
@@ -608,160 +716,15 @@ def _insert_status(connection: sqlite3.Connection, status: dict[str, Any]) -> No
             None if individual_limit is None else individual_limit["used"],
             None if individual_limit is None else individual_limit["remainingPercent"],
             None if individual_limit is None else individual_limit["resetsAt"],
-            None
-            if status.get("modelUsage") is None
-            else status["modelUsage"]["status"],
-            None
-            if status.get("modelUsage") is None
-            else status["modelUsage"]["threadCount"],
-            None
-            if status.get("modelUsage") is None
-            else status["modelUsage"]["retrievedThreadCount"],
-            None
-            if status.get("modelUsage") is None
-            else status["modelUsage"]["unavailableThreadCount"],
-            None
-            if status.get("modelUsage") is None
-            else status["modelUsage"]["failedThreadCount"],
         ),
     )
-    model_usage = status.get("modelUsage")
-    if model_usage is None:
-        return
-    snapshot_id = cursor.lastrowid
-    connection.execute(
-        """
-        INSERT INTO model_usage_collections (
-            snapshot_id,
-            status,
-            observed_at,
-            thread_list_complete,
-            listed_thread_count,
-            targeted_thread_count,
-            not_targeted_thread_count,
-            attempted_thread_count,
-            not_attempted_thread_count,
-            retrieved_thread_count,
-            unavailable_thread_count,
-            failed_thread_count,
-            active_within_hours
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            snapshot_id,
-            model_usage["status"],
-            model_usage["observedAt"],
-            int(model_usage["threadListComplete"]),
-            model_usage["listedThreadCount"],
-            model_usage["targetedThreadCount"],
-            model_usage["notTargetedThreadCount"],
-            model_usage["attemptedThreadCount"],
-            model_usage["notAttemptedThreadCount"],
-            model_usage["retrievedThreadCount"],
-            model_usage["unavailableThreadCount"],
-            model_usage["failedThreadCount"],
-            model_usage["activeWithinHours"],
-        ),
-    )
-    for thread in model_usage["threads"]:
-        connection.execute(
-            """
-            INSERT INTO thread_observations (
-                snapshot_id,
-                thread_id,
-                parent_thread_id,
-                source,
-                updated_at,
-                recency_at,
-                archived,
-                usage_status,
-                observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                snapshot_id,
-                thread["threadId"],
-                thread["parentThreadId"],
-                thread["source"],
-                thread["updatedAt"],
-                thread["recencyAt"],
-                None if thread["archived"] is None else int(thread["archived"]),
-                thread["usageStatus"],
-                thread["observedAt"],
-            ),
+    inventory = status.get("threadInventory")
+    if inventory is not None and inventory.get("threadListComplete") is True:
+        _upsert_latest_threads(
+            connection,
+            inventory["threads"],
+            inventory["observedAt"],
         )
-        for model in thread["models"]:
-            model_key = model["model"] or ""
-            observed_at = thread["observedAt"] or model_usage["observedAt"]
-            period = _estimate_period(
-                connection,
-                thread["threadId"],
-                model_key,
-                observed_at,
-                model,
-            )
-            period["attribution"] = "detected_at_interval_end"
-            connection.execute(
-                """
-                INSERT INTO thread_model_usage (
-                    snapshot_id,
-                    thread_id,
-                    model,
-                    observed_at,
-                    estimated_usage_credits_micros,
-                    input_tokens,
-                    cached_input_tokens,
-                    output_tokens,
-                    total_tokens,
-                    period_status,
-                    interval_start,
-                    interval_end,
-                    interval_seconds,
-                    delta_credits_micros,
-                    delta_input_tokens,
-                    delta_cached_input_tokens,
-                    delta_output_tokens,
-                    delta_total_tokens
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    snapshot_id,
-                    thread["threadId"],
-                    model_key,
-                    observed_at,
-                    model["estimatedUsageCreditsMicros"],
-                    model["inputTokens"],
-                    model["cachedInputTokens"],
-                    model["outputTokens"],
-                    model["totalTokens"],
-                    period["status"],
-                    period["intervalStart"],
-                    period["intervalEnd"],
-                    period["intervalSeconds"],
-                    period["estimatedUsageCreditsMicros"],
-                    period["inputTokens"],
-                    period["cachedInputTokens"],
-                    period["outputTokens"],
-                    period["totalTokens"],
-                ),
-            )
-            model["cumulativeUsage"] = {
-                "estimatedUsageCreditsMicros": model["estimatedUsageCreditsMicros"],
-                "inputTokens": model["inputTokens"],
-                "cachedInputTokens": model["cachedInputTokens"],
-                "outputTokens": model["outputTokens"],
-                "totalTokens": model["totalTokens"],
-            }
-            model["periodUsageEstimate"] = period
-            for key in (
-                "estimatedUsageCreditsMicros",
-                "inputTokens",
-                "cachedInputTokens",
-                "outputTokens",
-                "totalTokens",
-            ):
-                del model[key]
-
 
 def _estimate_period(
     connection: sqlite3.Connection,
@@ -837,7 +800,7 @@ def _estimate_period(
 def _status_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
     collected_at = row[0]
     return {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "source": "live",
         "collectedAt": collected_at,
         "fiveHour": _window_from_row(row[1], row[2], row[3]),
@@ -847,7 +810,6 @@ def _status_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
             if len(row) == 7
             else _individual_limit_from_row(row[7], row[8], row[9], row[10], row[11])
         ),
-        "modelUsage": _model_usage_from_row(row[12:17]) if len(row) >= 17 else None,
     }
 
 
