@@ -184,7 +184,8 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
 
     five_hour_chart = _render_chart(
         chart_id="five-hour-chart",
-        accessible_title=f"過去{FIVE_HOUR_RANGE}時間の5時間枠残率",
+        accessible_title=f"過去{FIVE_HOUR_RANGE.total_seconds() // 3600:.0f}"
+        + "時間の5時間枠残率",
         rows=five_hour_rows,
         start=generated_at - FIVE_HOUR_RANGE,
         end=generated_at,
@@ -193,7 +194,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
     )
     weekly_chart = _render_chart(
         chart_id="weekly-chart",
-        accessible_title=f"過去{WEEKLY_RANGE}日間の週間枠残率",
+        accessible_title=f"過去{WEEKLY_RANGE.days}日間の週間枠残率",
         rows=weekly_rows,
         start=generated_at - WEEKLY_RANGE,
         end=generated_at,
