@@ -386,6 +386,8 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       main {{ width: min(100% - 24px, 560px); padding-top: 20px 0 12px; }}
       .masthead {{ display: grid; align-items: start; gap: 15px; margin-bottom: 18px; }}
       .refresh {{ display: flex; align-items: center; justify-content: space-between; }}
+      .chart .date-label {{ font-size: 22px; }}
+      .chart .axis-label {{ font-size: 22px; }}
       .cards {{ grid-template-columns: 1fr; gap: 12px; }}
       .card {{ padding: 17px 14px 11px; }}
     }}
@@ -564,7 +566,7 @@ def _render_chart(
             f'x2="{right:.1f}" y2="{y:.1f}" />'
         )
         grid.append(
-            f'<text x="{left - 10:.1f}" y="{y + 3.5:.1f}" '
+            f'<text class="axis-label" x="{left - 10:.1f}" y="{y + 3.5:.1f}" '
             f'text-anchor="end">{value}</text>'
         )
 
@@ -575,7 +577,7 @@ def _render_chart(
         label = tick.astimezone(DISPLAY_TZ).strftime("%m/%d %H:%M")
         anchor = "start" if fraction == 0 else "end" if fraction == 1 else "middle"
         x_labels.append(
-            f'<text x="{position:.1f}" y="{height - 12}" '
+            f'<text class="date-label" x="{position:.1f}" y="{height - 12}" '
             f'text-anchor="{anchor}">{html.escape(label)}</text>'
         )
 
