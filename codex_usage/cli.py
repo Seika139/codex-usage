@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .app_server import AppServerError, get_live_status
+from .dashboard import DashboardError, generate_dashboard
 from .notifications import (
     NotificationError,
     find_rate_limit_alerts,
@@ -24,8 +25,8 @@ from .storage import (
     StorageError,
     compact_database,
     get_database_stats,
-    load_latest_threads,
     load_latest_rate_limit_snapshot,
+    load_latest_threads,
     load_statuses_since,
     save_status,
 )
@@ -60,6 +61,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "db-compact", help="Migrate the database and reclaim unused SQLite pages."
     )
     db_compact.add_argument("--db", metavar="PATH", help="SQLite database path.")
+    dashboard = commands.add_parser(
+        "dashboard", help="Generate a static HTML quota dashboard."
+    )
+    dashboard.add_argument("--db", metavar="PATH", help="SQLite database path.")
     scheduler = commands.add_parser("schedule", help="Manage the scheduled collector.")
     schedule_commands = scheduler.add_subparsers(dest="schedule_action", required=True)
     install = schedule_commands.add_parser(
@@ -121,6 +126,13 @@ def main(argv: list[str] | None = None) -> int:
             alerts = find_rate_limit_alerts(previous, status)
             send_rate_limit_alerts(alerts)
             save_status(status, args.db)
+            try:
+                generate_dashboard(args.db)
+            except DashboardError as exc:
+                print(
+                    f"codex-usage: warning: the dashboard was not updated: {exc}",
+                    file=sys.stderr,
+                )
             _print_json(status)
         elif args.command == "history":
             generated_at = datetime.now(UTC)
@@ -138,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(get_database_stats(args.db))
         elif args.command == "db-compact":
             _print_json(compact_database(args.db))
+        elif args.command == "dashboard":
+            print(generate_dashboard(args.db))
         else:
             _print_json(
                 schedule(
@@ -145,7 +159,13 @@ def main(argv: list[str] | None = None) -> int:
                     interval_minutes=getattr(args, "interval_minutes", None),
                 )
             )
-    except (AppServerError, NotificationError, SchedulerError, StorageError) as exc:
+    except (
+        AppServerError,
+        DashboardError,
+        NotificationError,
+        SchedulerError,
+        StorageError,
+    ) as exc:
         print(f"codex-usage: {exc}", file=sys.stderr)
         return 1
     return 0
