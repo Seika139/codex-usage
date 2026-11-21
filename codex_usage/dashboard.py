@@ -237,9 +237,9 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       -webkit-font-smoothing: antialiased;
     }}
     main {{
-      width: min(100% - 24px, 560px);
+      width: min(100% - 24px, 1600px);
       margin: 0 auto;
-      padding: 20px 0 8px;
+      padding: 20px 0 36px;
     }}
     .masthead {{
       display: flex;
