@@ -229,7 +229,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      min-height: 100vh;
       color: var(--text);
       background:
         radial-gradient(ellipse at 12% 0%, rgba(81, 143, 123, .16), transparent 38rem),
@@ -384,7 +383,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     }}
     @media (max-width: 700px) {{
-      main {{ width: min(100% - 24px, 560px); padding-top: 20px; }}
+      main {{ width: min(100% - 24px, 560px); padding-top: 20px 0 12px; }}
       .masthead {{ display: grid; align-items: start; gap: 15px; margin-bottom: 18px; }}
       .refresh {{ display: flex; align-items: center; justify-content: space-between; }}
       .cards {{ grid-template-columns: 1fr; gap: 12px; }}
