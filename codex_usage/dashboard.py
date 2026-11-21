@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import html
 import math
 import os
@@ -8,6 +9,7 @@ import sqlite3
 import stat
 import tempfile
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from statistics import median_low
 from typing import Any
@@ -25,9 +27,7 @@ class DashboardError(RuntimeError):
 def resolve_dashboard_path(db_path: str | Path | None = None) -> Path:
     """Return an isolated dashboard path associated with one usage database."""
     database_path = resolve_db_path(db_path).absolute()
-    dashboard_directory = database_path.with_name(
-        f"{database_path.name}.dashboard"
-    )
+    dashboard_directory = database_path.with_name(f"{database_path.name}.dashboard")
     return dashboard_directory / "index.html"
 
 
@@ -62,10 +62,8 @@ def _write_private_file(destination: Path, content: str) -> None:
         _write_posix_private_file(destination, content)
         return
 
-    try:
+    with contextlib.suppress(FileExistsError):
         directory.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
     directory_info = directory.lstat()
     if not stat.S_ISDIR(directory_info.st_mode) or _is_reparse_point(directory_info):
         raise PermissionError("The dashboard output path must be a real directory.")
@@ -89,10 +87,8 @@ def _write_private_file(destination: Path, content: str) -> None:
         temporary_path = None
     except OSError:
         if temporary_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 temporary_path.unlink()
-            except OSError:
-                pass
         raise
 
 
@@ -104,10 +100,8 @@ def _write_posix_private_file(destination: Path, content: str) -> None:
     if os.open not in os.supports_dir_fd or os.rename not in os.supports_dir_fd:
         raise OSError("Secure dashboard directory-relative operations are unavailable.")
 
-    try:
+    with contextlib.suppress(FileExistsError):
         os.mkdir(directory, 0o700)
-    except FileExistsError:
-        pass
 
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory_fd = os.open(directory, directory_flags)
@@ -129,10 +123,7 @@ def _write_posix_private_file(destination: Path, content: str) -> None:
                 try:
                     temporary_fd = os.open(
                         candidate,
-                        os.O_WRONLY
-                        | os.O_CREAT
-                        | os.O_EXCL
-                        | os.O_NOFOLLOW,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                         0o600,
                         dir_fd=directory_fd,
                     )
@@ -141,7 +132,9 @@ def _write_posix_private_file(destination: Path, content: str) -> None:
                 except FileExistsError:
                     continue
             if temporary_fd is None or temporary_name is None:
-                raise FileExistsError("Could not reserve a private dashboard temp file.")
+                raise FileExistsError(
+                    "Could not reserve a private dashboard temp file."
+                )
 
             temporary_file = os.fdopen(
                 temporary_fd, "w", encoding="utf-8", newline="\n"
@@ -162,10 +155,8 @@ def _write_posix_private_file(destination: Path, content: str) -> None:
             if temporary_fd is not None:
                 os.close(temporary_fd)
             if temporary_name is not None:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(temporary_name, dir_fd=directory_fd)
-                except OSError:
-                    pass
     finally:
         os.close(directory_fd)
 
@@ -239,34 +230,166 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       -webkit-font-smoothing: antialiased;
     }}
-    main {{ width: min(100% - 32px, 1040px); margin: 0 auto; padding: 28px 0 36px; }}
-    .masthead {{ display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 26px; }}
-    .eyebrow {{ margin: 0 0 8px; color: var(--mint); font: 600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .16em; text-transform: uppercase; }}
-    h1, h2 {{ margin: 0; font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-weight: 500; letter-spacing: -.035em; }}
+    main {{
+      width: min(100% - 32px, 1040px);
+      margin: 0 auto;
+      padding: 28px 0 36px;
+    }}
+    .masthead {{
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 26px;
+    }}
+    .eyebrow {{
+      margin: 0 0 8px;
+      color: var(--mint);
+      font: 600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }}
+    h1, h2 {{
+      margin: 0;
+      font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      font-weight: 500;
+      letter-spacing: -.035em;
+    }}
     h1 {{ font-size: clamp(30px, 7vw, 48px); line-height: 1.02; }}
-    .subhead {{ margin: 10px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; }}
-    .refresh {{ display: grid; gap: 6px; min-width: 156px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: rgba(17, 31, 33, .8); }}
-    .refresh span:first-child {{ color: var(--muted); font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; text-transform: uppercase; }}
-    .refresh time {{ font: 500 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }}
-    .cards {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }}
-    .card {{ min-width: 0; overflow: hidden; padding: 19px 18px 14px; border: 1px solid var(--border); border-radius: 16px; background: linear-gradient(160deg, rgba(23, 40, 42, .94), rgba(15, 29, 31, .96)); box-shadow: 0 16px 44px rgba(0, 0, 0, .16); }}
-    .card-head {{ display: flex; align-items: start; justify-content: space-between; gap: 12px; }}
-    .window {{ margin: 0 0 5px; color: var(--muted); font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; text-transform: uppercase; }}
+    .subhead {{
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }}
+    .refresh {{
+      display: grid;
+      gap: 6px;
+      min-width: 156px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(17, 31, 33, .8);
+    }}
+    .refresh span:first-child {{
+      color: var(--muted);
+      font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }}
+    .refresh time {{
+      font: 500 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
+    .cards {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }}
+    .card {{
+      min-width: 0;
+      overflow: hidden;
+      padding: 19px 18px 14px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: linear-gradient(
+        160deg,
+        rgba(23, 40, 42, .94),
+        rgba(15, 29, 31, .96)
+      );
+      box-shadow: 0 16px 44px rgba(0, 0, 0, .16);
+    }}
+    .card-head {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+    }}
+    .window {{
+      margin: 0 0 5px;
+      color: var(--muted);
+      font: 600 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }}
     h2 {{ font-size: 22px; line-height: 1.1; }}
-    .range {{ flex: 0 0 auto; padding: 6px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }}
-    .metric-row {{ display: flex; align-items: baseline; gap: 8px; margin: 18px 0 3px; }}
-    .metric {{ color: var(--text); font: 500 clamp(34px, 8vw, 48px)/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: -.07em; }}
-    .metric span {{ color: var(--muted); font: 13px/1 ui-sans-serif, system-ui, sans-serif; letter-spacing: 0; }}
-    .reset {{ min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; }}
-    .chart {{ display: block; width: 100%; height: auto; margin-top: 12px; overflow: visible; }}
-    .chart text {{ fill: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    .range {{
+      flex: 0 0 auto;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
+    .metric-row {{
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin: 18px 0 3px;
+    }}
+    .metric {{
+      color: var(--text);
+      font: 500 clamp(34px, 8vw, 48px)/1
+        ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: -.07em;
+    }}
+    .metric span {{
+      color: var(--muted);
+      font: 13px/1 ui-sans-serif, system-ui, sans-serif;
+      letter-spacing: 0;
+    }}
+    .reset {{
+      min-height: 18px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .chart {{
+      display: block;
+      width: 100%;
+      height: auto;
+      margin-top: 12px;
+      overflow: visible;
+    }}
+    .chart text {{
+      fill: var(--muted);
+      font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
     .chart .axis {{ stroke: var(--grid); stroke-width: 1; }}
-    .chart .series {{ fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }}
+    .chart .series {{
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }}
     .chart .dot {{ fill: var(--surface); stroke: currentColor; stroke-width: 2; }}
-    .empty {{ display: grid; min-height: 140px; place-items: center; padding: 16px; color: var(--muted); font-size: 13px; text-align: center; }}
-    .footnote {{ margin: 18px 2px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }}
+    .empty {{
+      display: grid;
+      min-height: 140px;
+      place-items: center;
+      padding: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }}
+    .footnote {{
+      margin: 18px 2px 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }}
     .footnote strong {{ color: var(--text); font-weight: 600; }}
-    footer {{ display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 20px; margin-top: 24px; padding-top: 13px; border-top: 1px solid rgba(44, 65, 64, .75); color: var(--muted); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    footer {{
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 8px 20px;
+      margin-top: 24px;
+      padding-top: 13px;
+      border-top: 1px solid rgba(44, 65, 64, .75);
+      color: var(--muted);
+      font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }}
     @media (max-width: 700px) {{
       main {{ width: min(100% - 24px, 560px); padding-top: 20px; }}
       .masthead {{ display: grid; align-items: start; gap: 15px; margin-bottom: 18px; }}
@@ -274,7 +397,9 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       .cards {{ grid-template-columns: 1fr; gap: 12px; }}
       .card {{ padding: 17px 14px 11px; }}
     }}
-    @media (prefers-reduced-motion: reduce) {{ *, *::before, *::after {{ scroll-behavior: auto !important; }} }}
+    @media (prefers-reduced-motion: reduce) {{
+      *, *::before, *::after {{ scroll-behavior: auto !important; }}
+    }}
   </style>
 </head>
 <body>
@@ -293,25 +418,45 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
     <div class="cards">
       <section class="card" aria-labelledby="five-hour-title">
         <div class="card-head">
-          <div><p class="window">ローリング枠</p><h2 id="five-hour-title">5時間枠</h2></div>
+          <div>
+            <p class="window">ローリング枠</p>
+            <h2 id="five-hour-title">5時間枠</h2>
+          </div>
           <span class="range">24時間</span>
         </div>
-        <div class="metric-row"><strong class="metric">{_format_remaining(five_hour)}</strong><span>残り</span></div>
+        <div class="metric-row">
+          <strong class="metric">{_format_remaining(five_hour)}</strong>
+          <span>残り</span>
+        </div>
         <p class="reset">{_reset_caption(five_hour)}</p>
         {five_hour_chart}
       </section>
       <section class="card" aria-labelledby="weekly-title">
         <div class="card-head">
-          <div><p class="window">ローリング枠</p><h2 id="weekly-title">週間枠</h2></div>
+          <div>
+            <p class="window">ローリング枠</p>
+            <h2 id="weekly-title">週間枠</h2>
+          </div>
           <span class="range">7日間</span>
         </div>
-        <div class="metric-row"><strong class="metric">{_format_remaining(weekly)}</strong><span>残り</span></div>
+        <div class="metric-row">
+          <strong class="metric">{_format_remaining(weekly)}</strong>
+          <span>残り</span>
+        </div>
         <p class="reset">{_reset_caption(weekly)}</p>
         {weekly_chart}
       </section>
     </div>
-    <p class="footnote"><strong>クレジット数ではなく残率です。</strong> Codexが返す利用率から「100% − 利用率」で算出しています。このページは {html.escape(generated_label)} UTC に生成された静的スナップショットです。</p>
-    <footer><span>生成時刻 {html.escape(generated_label)} UTC</span><span>最終計測 {html.escape(measured_label)} UTC</span></footer>
+    <p class="footnote">
+      <strong>クレジット数ではなく残率です。</strong>
+      Codexが返す利用率から「100% − 利用率」で算出しています。
+      このページは {html.escape(generated_label)} UTC に生成された
+      静的スナップショットです。
+    </p>
+    <footer>
+      <span>生成時刻 {html.escape(generated_label)} UTC</span>
+      <span>最終計測 {html.escape(measured_label)} UTC</span>
+    </footer>
   </main>
 </body>
 </html>
@@ -396,10 +541,7 @@ def _render_chart(
     valid_values = [value for _, value in rows if value is not None]
     if not valid_values:
         label = html.escape(empty_label)
-        return (
-            f'<div class="empty" role="img" aria-label="{label}">'
-            f"{label}</div>"
-        )
+        return f'<div class="empty" role="img" aria-label="{label}">{label}</div>'
 
     all_times = [moment for moment, _ in rows]
     expected_gap = _expected_gap_seconds(all_times)
@@ -473,9 +615,19 @@ def _render_chart(
         f"{accessible_title}; percentages from zero to one hundred"
     )
     svg_content = "\n      ".join([*grid, *x_labels, *paths, *dots])
-    return f"""<svg id="{chart_id}" class="chart" viewBox="0 0 {width} {height}" role="img" aria-label="{chart_label}" style="color: {accent}">
+    return f"""<svg
+  id="{chart_id}"
+  class="chart"
+  viewBox="0 0 {width} {height}"
+  role="img"
+  aria-label="{chart_label}"
+  style="color: {accent}"
+>
   <title>{title}</title>
-  <desc>Remaining quota percentage over time. Missing observations and long gaps break the line.</desc>
+  <desc>
+    Remaining quota percentage over time. Missing observations and long gaps
+    break the line.
+  </desc>
   {svg_content}
 </svg>"""
 
@@ -483,7 +635,7 @@ def _render_chart(
 def _expected_gap_seconds(times: list[datetime]) -> float:
     differences = sorted(
         (right - left).total_seconds()
-        for left, right in zip(times, times[1:], strict=False)
+        for left, right in pairwise(times)
         if right > left
     )
     if not differences:

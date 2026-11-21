@@ -25,8 +25,8 @@ from .storage import (
     StorageError,
     compact_database,
     get_database_stats,
-    load_latest_threads,
     load_latest_rate_limit_snapshot,
+    load_latest_threads,
     load_statuses_since,
     save_status,
 )
