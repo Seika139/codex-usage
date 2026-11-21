@@ -245,13 +245,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       gap: 24px;
       margin-bottom: 26px;
     }}
-    .eyebrow {{
-      margin: 0 0 8px;
-      color: var(--mint);
-      font: 600 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-      letter-spacing: .16em;
-      text-transform: uppercase;
-    }}
     h1, h2 {{
       margin: 0;
       font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
@@ -375,13 +368,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       font-size: 13px;
       text-align: center;
     }}
-    .footnote {{
-      margin: 18px 2px 0;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.6;
-    }}
-    .footnote strong {{ color: var(--text); font-weight: 600; }}
     footer {{
       display: flex;
       flex-wrap: wrap;
@@ -409,9 +395,8 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
   <main>
     <header class="masthead">
       <div>
-        <p class="eyebrow">Codex · 利用枠モニター</p>
-        <h1>残り利用枠</h1>
-        <p class="subhead">5時間枠と週間枠の最近の推移です。</p>
+        <h1>Codex 残り利用枠</h1>
+        <p class="subhead">定時観測している残り利用枠をグラフ表示しています</p>
       </div>
     </header>
     <div class="cards">
@@ -444,10 +429,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
         {weekly_chart}
       </section>
     </div>
-    <p class="footnote">
-      このページは {html.escape(generated_label)} {TZ_LABEL} に生成された
-      静的スナップショットです。
-    </p>
     <footer>
       <span>生成時刻 {html.escape(generated_label)} {TZ_LABEL}</span>
       <span>最終計測 {html.escape(measured_label)} {TZ_LABEL}</span>
