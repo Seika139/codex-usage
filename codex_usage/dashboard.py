@@ -413,10 +413,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
         <h1>残り利用枠</h1>
         <p class="subhead">5時間枠と週間枠の最近の推移です。</p>
       </div>
-      <div class="refresh">
-        <span>最新計測 · {TZ_LABEL}</span>
-        <time>{html.escape(measured_label)}</time>
-      </div>
     </header>
     <div class="cards">
       <section class="card" aria-labelledby="five-hour-title">
@@ -424,7 +420,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
           <div>
             <h2 id="five-hour-title">5時間枠</h2>
           </div>
-          <span class="range">{FIVE_HOUR_RANGE}時間</span>
+          <span class="range">{FIVE_HOUR_RANGE.total_seconds() // 3600:.0f}時間</span>
         </div>
         <div class="metric-row">
           <strong class="metric">{_format_remaining(five_hour)}</strong>
@@ -438,7 +434,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
           <div>
             <h2 id="weekly-title">週間枠</h2>
           </div>
-          <span class="range">{WEEKLY_RANGE}日間</span>
+          <span class="range">{WEEKLY_RANGE.days}日間</span>
         </div>
         <div class="metric-row">
           <strong class="metric">{_format_remaining(weekly)}</strong>
