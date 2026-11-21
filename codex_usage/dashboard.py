@@ -190,6 +190,8 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
         start=generated_at - FIVE_HOUR_RANGE,
         end=generated_at,
         accent="#8fe1bd",
+        accent_max="#3C7AF6",
+        accent_min="#CB0E0E",
         empty_label="この期間の5時間枠データはありません。",
     )
     weekly_chart = _render_chart(
@@ -198,7 +200,9 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
         rows=weekly_rows,
         start=generated_at - WEEKLY_RANGE,
         end=generated_at,
-        accent="#f0b66e",
+        accent="#f0ee6e",
+        accent_max="#3C7AF6",
+        accent_min="#CB0E0E",
         empty_label="この期間の週間枠データはありません。",
     )
 
@@ -503,6 +507,8 @@ def _render_chart(
     start: datetime,
     end: datetime,
     accent: str,
+    accent_max: str,
+    accent_min: str,
     empty_label: str,
 ) -> str:
     width = 760
@@ -583,8 +589,17 @@ def _render_chart(
         if len(coordinates) > 1:
             points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coordinates)
             paths.append(f'<polyline class="series" points="{points}" />')
-        for x, y in coordinates:
-            dots.append(f'<circle class="dot" cx="{x:.1f}" cy="{y:.1f}" r="3" />')
+        for (_, value), (x, y) in zip(segment, coordinates, strict=False):
+            if math.isclose(value, 100.0, abs_tol=1e-9):
+                color = accent_max
+            elif math.isclose(value, 0.0, abs_tol=1e-9):
+                color = accent_min
+            else:
+                color = accent
+            dots.append(
+                f'<circle class="dot" cx="{x:.1f}" cy="{y:.1f}" '
+                f'r="3" style="stroke: {color}" />'
+            )
 
     title = html.escape(accessible_title)
     chart_label = html.escape(
