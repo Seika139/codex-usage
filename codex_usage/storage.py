@@ -209,7 +209,7 @@ def load_latest_rate_limit_snapshot(
 
 
 def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
-    """Return snapshot count and the main SQLite file's on-disk size."""
+    """Return snapshot count, table sizes, and the SQLite file's on-disk size."""
     path = resolve_db_path(db_path).absolute()
     try:
         size_bytes = path.stat().st_size
@@ -221,6 +221,7 @@ def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
     try:
         database_uri = f"{path.as_uri()}?mode=ro"
         with closing(sqlite3.connect(database_uri, uri=True)) as connection:
+            connection.execute("BEGIN")
             version = _schema_version(connection)
             if version > SCHEMA_VERSION:
                 raise StorageError(
@@ -241,7 +242,15 @@ def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
                 if row is None:
                     raise StorageError("Could not count usage snapshots.")
                 snapshot_count = int(row[0])
-        return _database_stats_result(path, True, snapshot_count, size_bytes)
+            tables = _database_table_stats(connection)
+        return _database_stats_result(
+            path,
+            True,
+            snapshot_count,
+            size_bytes,
+            tables[0],
+            tables[1],
+        )
     except StorageError:
         raise
     except (OSError, sqlite3.Error, ValueError) as exc:
@@ -249,15 +258,92 @@ def get_database_stats(db_path: str | Path | None = None) -> dict[str, Any]:
 
 
 def _database_stats_result(
-    path: Path, exists: bool, snapshot_count: int, size_bytes: int
+    path: Path,
+    exists: bool,
+    snapshot_count: int,
+    size_bytes: int,
+    tables: list[dict[str, Any]] | None = None,
+    table_storage_available: bool = False,
 ) -> dict[str, Any]:
     return {
         "databasePath": str(path),
         "exists": exists,
         "usageSnapshots": {"snapshotCount": snapshot_count},
+        "tableStorageAvailable": table_storage_available,
+        "tables": [] if tables is None else tables,
         "sizeBytes": size_bytes,
         "sizeHumanReadable": _format_file_size(size_bytes),
     }
+
+
+def _database_table_stats(
+    connection: sqlite3.Connection,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return user table row counts and their allocated table/index pages."""
+    table_names = [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_schema "
+            "WHERE type = 'table' AND name NOT GLOB 'sqlite_*' "
+            "ORDER BY name"
+        )
+    ]
+    row_counts: dict[str, int] = {}
+    for table_name in table_names:
+        quoted_name = '"' + table_name.replace('"', '""') + '"'
+        row = connection.execute(f"SELECT COUNT(*) FROM {quoted_name}").fetchone()
+        if row is None:
+            raise StorageError(f"Could not count rows in table '{table_name}'.")
+        row_counts[table_name] = int(row[0])
+
+    try:
+        page_sizes = {
+            str(name): int(size)
+            for name, size in connection.execute(
+                "SELECT name, SUM(pgsize) FROM dbstat GROUP BY name"
+            )
+        }
+    except sqlite3.OperationalError as exc:
+        if "no such table: dbstat" not in str(exc).lower():
+            raise
+        return (
+            [
+                {
+                    "name": table_name,
+                    "rowCount": row_counts[table_name],
+                    "dataSizeBytes": None,
+                    "indexSizeBytes": None,
+                    "sizeBytes": None,
+                }
+                for table_name in table_names
+            ],
+            False,
+        )
+
+    index_sizes: dict[str, int] = {}
+    for index_name, table_name in connection.execute(
+        "SELECT name, tbl_name FROM sqlite_schema "
+        "WHERE type = 'index' AND tbl_name NOT GLOB 'sqlite_*'"
+    ):
+        table_name = str(table_name)
+        index_sizes[table_name] = index_sizes.get(table_name, 0) + page_sizes.get(
+            str(index_name), 0
+        )
+
+    tables = []
+    for table_name in table_names:
+        data_size = page_sizes.get(table_name, 0)
+        index_size = index_sizes.get(table_name, 0)
+        tables.append(
+            {
+                "name": table_name,
+                "rowCount": row_counts[table_name],
+                "dataSizeBytes": data_size,
+                "indexSizeBytes": index_size,
+                "sizeBytes": data_size + index_size,
+            }
+        )
+    return tables, True
 
 
 def _format_file_size(size_bytes: int) -> str:

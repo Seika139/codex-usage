@@ -58,14 +58,14 @@ SQLiteの保存先は`--db PATH`、または`CODEX_USAGE_DB`で指定できま�
 
 スナップショットは自動削除されず、DBに無期限で保持されます。`history --hours`は表示対象を絞るだけで、DBの行は削除しません。既定の30分間隔で収集すると1日48件、1年で約17,520件が追加されます。DBサイズを抑える必要がある場合は、バックアップのうえSQLiteの行を手動で削除してください。
 
-`db-stats`はDB内の全スナップショット件数と、SQLiteのメインDBファイルのサイズを確認します。`history --hours`の期間指定とは無関係に全件を数え、DBや親ディレクトリが未作成の場合も新しいファイルは作らず、件数とサイズを0として返します。
+`db-stats`はDB内の全スナップショット件数、各ユーザーテーブルの行数とテーブル/インデックスの容量、SQLiteのメインDBファイルのサイズを確認します。`history --hours`の期間指定とは無関係に全件を数え、DBや親ディレクトリが未作成の場合も新しいファイルは作らず、件数とサイズを0、テーブル一覧を空として返します。
 
 ```sh
 mise run db-stats
 mise run db-stats --db ./codex-usage.sqlite3
 ```
 
-出力には絶対パス、ファイルの有無、`usage_snapshots`の全件数、バイト単位のサイズと1024基準の読みやすいサイズを含みます。`sizeBytes`は未使用ページを含むメインDBファイルの実サイズです。WALや共有メモリなどのサイドカーファイルは含みません。DBのバージョン確認と件数取得は読み取り専用で行い、スキーマ移行やDBへの書き込みはしません。
+出力には絶対パス、ファイルの有無、`usage_snapshots`の全件数、テーブルごとの行数と容量、バイト単位のDBサイズと1024基準の読みやすいサイズを含みます。`tables`の各項目にある`dataSizeBytes`はテーブル本体、`indexSizeBytes`はそのテーブルに属する全インデックス（自動作成インデックスを含む）、`sizeBytes`は両者の合計の割り当てページ容量です。`tableStorageAvailable`が`false`の場合、SQLiteで`dbstat`が使えないかDBファイルがまだ存在しません。DBファイルが存在し、`dbstat`が使えない場合も行数は取得でき、容量の値は`null`です。未作成DBでは`tables`は空配列です。テーブル別容量の合計は、未使用ページやSQLiteの管理領域などを含む`sizeBytes`（メインDBファイルの実サイズ）とは一致しないことがあります。WALや共有メモリなどのサイドカーファイルはDB全体サイズに含みません。DBのバージョン確認、行数、容量の取得は読み取り専用の同一トランザクション内で行い、スキーマ移行やDBへの書き込みはしません。
 
 ```json
 {
@@ -74,6 +74,16 @@ mise run db-stats --db ./codex-usage.sqlite3
   "usageSnapshots": {
     "snapshotCount": 123
   },
+  "tableStorageAvailable": true,
+  "tables": [
+    {
+      "name": "usage_snapshots",
+      "rowCount": 123,
+      "dataSizeBytes": 12288,
+      "indexSizeBytes": 4096,
+      "sizeBytes": 16384
+    }
+  ],
   "sizeBytes": 16384,
   "sizeHumanReadable": "16.0 KiB"
 }
