@@ -17,7 +17,7 @@ from typing import Any
 from .storage import StorageError, load_statuses_since, resolve_db_path
 
 DISPLAY_TZ = None
-TZ_LABEL = "ローカル時刻"
+TZ_LABEL = datetime.now().astimezone().tzname()
 FIVE_HOUR_RANGE = timedelta(hours=48)
 WEEKLY_RANGE = timedelta(days=14)
 
@@ -422,7 +422,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       <section class="card" aria-labelledby="five-hour-title">
         <div class="card-head">
           <div>
-            <p class="window">ローリング枠</p>
             <h2 id="five-hour-title">5時間枠</h2>
           </div>
           <span class="range">{FIVE_HOUR_RANGE}時間</span>
@@ -437,7 +436,6 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       <section class="card" aria-labelledby="weekly-title">
         <div class="card-head">
           <div>
-            <p class="window">ローリング枠</p>
             <h2 id="weekly-title">週間枠</h2>
           </div>
           <span class="range">{WEEKLY_RANGE}日間</span>
