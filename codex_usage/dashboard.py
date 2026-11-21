@@ -16,8 +16,10 @@ from typing import Any
 
 from .storage import StorageError, load_statuses_since, resolve_db_path
 
-FIVE_HOUR_RANGE = timedelta(hours=24)
-WEEKLY_RANGE = timedelta(days=7)
+DISPLAY_TZ = None
+TZ_LABEL = "ローカル時刻"
+FIVE_HOUR_RANGE = timedelta(hours=48)
+WEEKLY_RANGE = timedelta(days=14)
 
 
 class DashboardError(RuntimeError):
@@ -182,7 +184,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
 
     five_hour_chart = _render_chart(
         chart_id="five-hour-chart",
-        accessible_title="過去24時間の5時間枠残率",
+        accessible_title=f"過去{FIVE_HOUR_RANGE}時間の5時間枠残率",
         rows=five_hour_rows,
         start=generated_at - FIVE_HOUR_RANGE,
         end=generated_at,
@@ -191,7 +193,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
     )
     weekly_chart = _render_chart(
         chart_id="weekly-chart",
-        accessible_title="過去7日間の週間枠残率",
+        accessible_title=f"過去{WEEKLY_RANGE}日間の週間枠残率",
         rows=weekly_rows,
         start=generated_at - WEEKLY_RANGE,
         end=generated_at,
@@ -411,7 +413,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
         <p class="subhead">5時間枠と週間枠の最近の推移です。</p>
       </div>
       <div class="refresh">
-        <span>最新計測 · UTC</span>
+        <span>最新計測 · {TZ_LABEL}</span>
         <time>{html.escape(measured_label)}</time>
       </div>
     </header>
@@ -422,7 +424,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
             <p class="window">ローリング枠</p>
             <h2 id="five-hour-title">5時間枠</h2>
           </div>
-          <span class="range">24時間</span>
+          <span class="range">{FIVE_HOUR_RANGE}時間</span>
         </div>
         <div class="metric-row">
           <strong class="metric">{_format_remaining(five_hour)}</strong>
@@ -437,7 +439,7 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
             <p class="window">ローリング枠</p>
             <h2 id="weekly-title">週間枠</h2>
           </div>
-          <span class="range">7日間</span>
+          <span class="range">{WEEKLY_RANGE}日間</span>
         </div>
         <div class="metric-row">
           <strong class="metric">{_format_remaining(weekly)}</strong>
@@ -448,14 +450,12 @@ def _render_dashboard(statuses: list[dict[str, Any]], generated_at: datetime) ->
       </section>
     </div>
     <p class="footnote">
-      <strong>クレジット数ではなく残率です。</strong>
-      Codexが返す利用率から「100% − 利用率」で算出しています。
-      このページは {html.escape(generated_label)} UTC に生成された
+      このページは {html.escape(generated_label)} {TZ_LABEL} に生成された
       静的スナップショットです。
     </p>
     <footer>
-      <span>生成時刻 {html.escape(generated_label)} UTC</span>
-      <span>最終計測 {html.escape(measured_label)} UTC</span>
+      <span>生成時刻 {html.escape(generated_label)} {TZ_LABEL}</span>
+      <span>最終計測 {html.escape(measured_label)} {TZ_LABEL}</span>
     </footer>
   </main>
 </body>
@@ -500,7 +500,7 @@ def _reset_caption(window: dict[str, Any] | None) -> str:
     reset_at = _format_timestamp(window.get("resetsAt"))
     if reset_at == "—":
         return "リセット時刻は取得できませんでした。"
-    return f"リセット {reset_at} UTC"
+    return f"リセット {reset_at} {TZ_LABEL}"
 
 
 def _window_rows(
@@ -591,7 +591,7 @@ def _render_chart(
     for fraction in (0.0, 0.5, 1.0):
         position = left + fraction * plot_width
         tick = start + (end - start) * fraction
-        label = tick.strftime("%m/%d %H:%M")
+        label = tick.astimezone(DISPLAY_TZ).strftime("%m/%d %H:%M")
         anchor = "start" if fraction == 0 else "end" if fraction == 1 else "middle"
         x_labels.append(
             f'<text x="{position:.1f}" y="{height - 12}" '
@@ -657,4 +657,4 @@ def _format_timestamp(value: Any) -> str:
     moment = _parse_timestamp(value)
     if moment is None:
         return "—"
-    return moment.strftime("%Y-%m-%d %H:%M:%S")
+    return moment.astimezone(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")

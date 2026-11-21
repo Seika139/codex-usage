@@ -785,7 +785,11 @@ def _thread_inventory_from_app_server(
                     "limit": 100,
                     "archived": archived,
                     "sourceKinds": [
-                        "cli", "vscode", "exec", "appServer", "subAgent",
+                        "cli",
+                        "vscode",
+                        "exec",
+                        "appServer",
+                        "subAgent",
                         "subAgentReview",
                         "subAgentCompact",
                         "subAgentThreadSpawn",
@@ -813,7 +817,8 @@ def _thread_inventory_from_app_server(
                     thread["activityAtField"] = (
                         "recencyAt"
                         if thread["recencyAt"] is not None
-                        else "updatedAt" if thread["updatedAt"] is not None
+                        else "updatedAt"
+                        if thread["updatedAt"] is not None
                         else None
                     )
                     thread["lastSeenAt"] = collected_at
